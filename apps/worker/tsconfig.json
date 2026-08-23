@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src/**/*.ts"],
+  "references": [
+    { "path": "../../packages/book" },
+    { "path": "../../packages/data" },
+    { "path": "../../packages/features" },
+    { "path": "../../packages/storage" },
+    { "path": "../../packages/types" },
+    { "path": "../../packages/utils" }
+  ]
+}

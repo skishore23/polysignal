@@ -1,0 +1,13 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/types" },
+    { "path": "packages/utils" },
+    { "path": "packages/data" },
+    { "path": "packages/book" },
+    { "path": "packages/features" },
+    { "path": "packages/storage" },
+    { "path": "apps/worker" },
+    { "path": "apps/web" }
+  ]
+}

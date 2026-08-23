@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "paths": [
+    "apps/worker/src/main.ts",
+    "apps/worker/src/config.ts",
+    "configs/worker.json",
+    "configs/verification.json",
+    "apps/worker/src/trading/MarketProfile.ts",
+    "apps/worker/src/trading/DecisionEngine.ts",
+    "apps/worker/src/trading/CostModel.ts",
+    "apps/worker/src/maker/MakerLoop.ts",
+    "apps/worker/src/taker/TakerLoop.ts",
+    "apps/worker/src/regime/RegimeGate.ts",
+    "apps/worker/src/verificationLoop.ts",
+    "apps/web/lib/performance.ts",
+    "packages/data/src/shadowPositionLedger.ts",
+    "scripts/go-live-gate.ts",
+    "scripts/invariants/no-signal-schema.ts",
+    "scripts/invariants/decision-chain-integrity.ts",
+    "scripts/invariants/decisionedge-contract.ts",
+    "scripts/invariants/decision-log-append-only.ts",
+    "scripts/invariants/maker-real-fill-activity.ts",
+    "scripts/invariants/taker-close-balance.ts",
+    "scripts/invariants/runtime-liveness.ts",
+    "scripts/freeze/fingerprint.ts"
+  ]
+}

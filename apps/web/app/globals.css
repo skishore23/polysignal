@@ -1,0 +1,224 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-display: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --font-cursive: "Segoe Print", "Bradley Hand", cursive;
+  --font-space-mono: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --background: 5 5% 5%;
+  /* #09090b - Deep Void */
+  --foreground: 240 5% 90%;
+  /* #e4e4e7 */
+
+  --card: 240 5% 8%;
+  /* #141417 */
+  --card-foreground: 240 5% 90%;
+
+  --popover: 240 5% 8%;
+  --popover-foreground: 240 5% 90%;
+
+  --primary: 150 70% 40%;
+  /* #10b981 - Emerald */
+  --primary-foreground: 0 0% 100%;
+
+  --secondary: 240 4% 16%;
+  --secondary-foreground: 240 5% 90%;
+
+  --muted: 240 4% 16%;
+  --muted-foreground: 240 5% 60%;
+
+  --accent: 240 4% 16%;
+  --accent-foreground: 240 5% 90%;
+
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 100%;
+
+  --border: 240 5% 16%;
+  --input: 240 5% 16%;
+  --ring: 150 70% 40%;
+
+  --radius: 0rem;
+}
+
+body {
+  @apply bg-background text-foreground;
+  color: hsl(var(--foreground));
+  background:
+    radial-gradient(circle at 50% 50%, rgba(16, 185, 129, 0.03), transparent),
+    linear-gradient(rgba(255, 255, 255, 0.01) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.01) 1px, transparent 1px),
+    hsl(var(--background));
+  background-size: 100% 100%, 40px 40px, 40px 40px;
+}
+
+@keyframes heartbeat {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+
+  50% {
+    transform: scale(1.2);
+    opacity: 0.8;
+  }
+
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.animate-heartbeat {
+  animation: heartbeat 2s ease-in-out infinite;
+}
+
+
+* {
+  scroll-behavior: smooth;
+}
+
+@keyframes scan {
+  from {
+    transform: translateY(-100%);
+  }
+
+  to {
+    transform: translateY(100%);
+  }
+}
+
+.animate-scan {
+  animation: scan 3s linear infinite;
+}
+
+.font-casual {
+  font-variation-settings: "CASL" 1;
+}
+
+.font-cursive {
+  font-family: var(--font-cursive), cursive;
+}
+
+@keyframes neural-shimmer {
+  0% {
+    background-position: -200% center;
+  }
+
+  100% {
+    background-position: 200% center;
+  }
+}
+
+.animate-neural-shimmer {
+  background: linear-gradient(90deg,
+      rgba(16, 185, 129, 0.6) 0%,
+      rgba(255, 255, 255, 0.9) 25%,
+      rgba(56, 189, 248, 0.6) 50%,
+      rgba(255, 255, 255, 0.9) 75%,
+      rgba(16, 185, 129, 0.6) 100%);
+  background-size: 200% auto;
+  color: transparent;
+  background-clip: text;
+  -webkit-background-clip: text;
+  animation: neural-shimmer 8s linear infinite;
+}
+
+.neural-soft-glow {
+  filter: drop-shadow(0 0 8px rgba(16, 185, 129, 0.2)) drop-shadow(0 0 12px rgba(56, 189, 248, 0.1));
+}
+
+/* Live data indicator animations */
+@keyframes live-breathe {
+  0%, 100% {
+    opacity: 0.4;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+}
+
+@keyframes live-ring {
+  0% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  100% {
+    transform: scale(2.5);
+    opacity: 0;
+  }
+}
+
+@keyframes live-pulse-line {
+  0% {
+    transform: scaleX(0);
+    opacity: 0;
+  }
+  10% {
+    transform: scaleX(0.3);
+    opacity: 1;
+  }
+  30% {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scaleX(1);
+    opacity: 0.3;
+  }
+  100% {
+    transform: scaleX(1);
+    opacity: 0;
+  }
+}
+
+@keyframes data-flow {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
+.animate-live-breathe {
+  animation: live-breathe 2s ease-in-out infinite;
+}
+
+.animate-live-ring {
+  animation: live-ring 2s ease-out infinite;
+}
+
+.animate-live-pulse-line {
+  animation: live-pulse-line 2s ease-out infinite;
+  transform-origin: left center;
+}
+
+.live-indicator {
+  position: relative;
+}
+
+.live-indicator::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  background: rgba(16, 185, 129, 0.3);
+  animation: live-ring 2s ease-out infinite;
+}
+
+.live-data-flow {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(16, 185, 129, 0.1) 20%,
+    rgba(16, 185, 129, 0.3) 50%,
+    rgba(16, 185, 129, 0.1) 80%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: data-flow 3s linear infinite;
+}

@@ -1,0 +1,8 @@
+{
+  "horizons_seconds": [
+    300,
+    900,
+    1800
+  ],
+  "price_sample_ms": 1000
+}

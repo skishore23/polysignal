@@ -1,0 +1,28 @@
+{
+  "name": "@polysignal/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "tsx src/main.ts",
+    "lint": "eslint src --max-warnings=0"
+  },
+  "dependencies": {
+    "@polymarket/clob-client": "^5.2.1",
+    "@polymarket/real-time-data-client": "^1.4.0",
+    "@polysignal/book": "workspace:*",
+    "@polysignal/data": "workspace:*",
+    "@polysignal/features": "workspace:*",
+    "@polysignal/storage": "workspace:*",
+    "@polysignal/types": "workspace:*",
+    "@polysignal/utils": "workspace:*",
+    "drizzle-orm": "^0.36.2",
+    "pino": "^9.3.2",
+    "pino-pretty": "^11.2.2"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2"
+  }
+}

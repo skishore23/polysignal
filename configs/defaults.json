@@ -1,0 +1,53 @@
+{
+  "wallet": {
+    "startingBalance": 100000,
+    "sizeMultiplier": 1,
+    "maxOpenPositions": 5,
+    "minConfidence": 0,
+    "minEdge": 0,
+    "autoOpenLimit": 5
+  },
+  "position": {
+    "size": 100,
+    "stopLossPct": 0.02,
+    "takeProfitPct": 0.03,
+    "maxHoldSec": 3600,
+    "minPositionSize": 100000
+  },
+  "presets": {
+    "fast": {
+      "sizeMultiplier": 2,
+      "maxOpenPositions": 20,
+      "minConfidence": 0.2,
+      "minEdge": 0,
+      "autoOpenLimit": 10,
+      "stopLossPct": 0.005,
+      "takeProfitPct": 0.006,
+      "maxHoldSec": 300,
+      "maxLossAbs": 500
+    },
+    "quality": {
+      "sizeMultiplier": 1,
+      "maxOpenPositions": 5,
+      "minConfidence": 0.7,
+      "minEdge": 0.0005,
+      "autoOpenLimit": 3,
+      "stopLossPct": 0.02,
+      "takeProfitPct": 0.04,
+      "maxHoldSec": 3600,
+      "maxLossAbs": 2000
+    }
+  },
+  "polling": {
+    "positionsRefreshMs": 1500,
+    "opportunitiesRefreshMs": 3000,
+    "intelligenceRefreshMs": 5000,
+    "sseIntervalMs": 1500,
+    "makerQuotesRefreshMs": 2000,
+    "summariesRefreshMs": 5000,
+    "statusRefreshMs": 5000
+  },
+  "urls": {
+    "polymarketBase": "https://polymarket.com"
+  }
+}

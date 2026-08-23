@@ -1,0 +1,165 @@
+{
+  "topN": 200,
+  "activeTokenLimit": 200,
+  "activeTokenWindowMinutes": 60,
+  "universeRefreshSec": 300,
+  "featureLoopIntervalMs": 1000,
+  "makerIntervalMs": 1500,
+  "takerIntervalMs": 10000,
+  "arbIntervalMs": 5000,
+  "makerMaxStalenessSec": 120,
+  "takerMaxStalenessSec": 60,
+  "fees": {
+    "slippageBps": 5,
+    "adverseSelectionBps": 2,
+    "queueLossBps": 1,
+    "rebateBps": 0
+  },
+  "belief": {
+    "minConfidence": 0.55,
+    "providerWeights": {
+      "sportsbook": 1.2,
+      "microstructure": 1
+    },
+    "sportsbook": {
+      "enabled": false,
+      "baseUrl": null,
+      "apiKey": null,
+      "timeoutMs": 1500
+    }
+  },
+  "arb": {
+    "enabled": true,
+    "minNetEdgeBps": 100,
+    "maxNotionalUsd": 100,
+    "maxConcurrentGroups": 5,
+    "enableNegRisk": true
+  },
+  "taker": {
+    "enabled": true,
+    "baseOrderSize": 50,
+    "maxNotionalPerOrderUsd": 100,
+    "minNetEdgeBps": 1200,
+    "maxLongPerToken": 500,
+    "maxShortPerToken": 500,
+    "maxSpread": 0.03,
+    "minDepth": 10,
+    "inventoryPenaltyBps": 0.5,
+    "close": {
+      "enabled": true,
+      "maxHoldSec": 300,
+      "closeMinEdgeToHoldBps": 50,
+      "edgeBelowTicks": 2,
+      "edgeBelowMs": 10000,
+      "closeCooldownSec": 20
+    }
+  },
+  "makerEv": {
+    "quoteSize": 10,
+    "maxNotionalPerOrderUsd": 10,
+    "minExpectedEvBps": 8,
+    "maxInventoryAbs": 50,
+    "inventoryLambdaBps": 50,
+    "quoteHalfSpreadBps": 30,
+    "maxSpread": 0.03,
+    "minDepth": 10,
+    "priceToleranceBps": 8,
+    "rebateShareAssumption": 0.05,
+    "liquidityRewardBpsWhenScoring": 1,
+    "tradeFlowGate": {
+      "enabled": true,
+      "lookbackSec": 600,
+      "minTradeEvents": 1,
+      "mode": "PASSIVE_DECAY",
+      "staleCancelAgeSec": 5
+    }
+  },
+  "marketScope": "ALL",
+  "executionSafeguards": {
+    "orderTtlMs": 5000,
+    "maxBatchOrders": 15
+  },
+  "regimeGating": {
+    "enabled": true,
+    "markovPath": "data/markov_regime.json",
+    "strategyPath": "data/strategy_regime_report.json",
+    "manifestPath": "data/regime_manifest.json",
+    "minCount": 20,
+    "minWavgBps": 0,
+    "minFillRate": 0,
+    "reloadMs": 60000,
+    "failOpen": true,
+    "explicitHardBlocks": [],
+    "probabilistic": {
+      "kEdge": 50,
+      "zEdge": 1.64,
+      "zFill": 1.64,
+      "sigmaPriorBps": 25,
+      "winsorClipBps": 250,
+      "riskPenaltyBps": 0.5,
+      "costBufferBps": 1,
+      "hardBlockUpperBps": 0,
+      "hardBlockMinCount": 30,
+      "walletBlendK": 50,
+      "minScoreByKind": {
+        "TAKER_BUY": 1.5,
+        "TAKER_SELL": 0.5,
+        "MAKER_BID": 0,
+        "MAKER_ASK": 0
+      },
+      "exploreMinByKind": {
+        "TAKER_BUY": 0.1,
+        "TAKER_SELL": 0.2,
+        "MAKER_BID": 0.25,
+        "MAKER_ASK": 0.25
+      },
+      "exploreMaxByKind": {
+        "TAKER_BUY": 0.25,
+        "TAKER_SELL": 0.35,
+        "MAKER_BID": 0.4,
+        "MAKER_ASK": 0.4
+      },
+      "explicitHardBlocks": []
+    },
+    "liveness": {
+      "enabled": false,
+      "lookbackMs": 300000,
+      "feedFreshMaxAgeSec": 60,
+      "minOrders5mMaker": 1,
+      "minOrders5mTaker": 1,
+      "relaxDurationMs": 60000,
+      "relaxCooldownMs": 60000,
+      "maxExploreOrdersPerWindow": 10,
+      "allowInLive": false
+    },
+    "modulation": {
+      "enabled": true,
+      "sizeMultiplierMin": 0.1,
+      "sizeMultiplierMax": 1,
+      "inventoryScaleFloor": 0.5,
+      "inventoryScaleCap": 1.5,
+      "spreadMultiplier": 1,
+      "spreadTicksMin": 1,
+      "spreadTicksMax": 200
+    }
+  },
+  "regimeReport": {
+    "enabled": true,
+    "intervalMs": 300000,
+    "hours": 24,
+    "horizonMs": 300000,
+    "bins": 3,
+    "stepMs": 1000,
+    "sampleLimit": 200000,
+    "features": [
+      "spread",
+      "depth",
+      "obi",
+      "vol",
+      "micro"
+    ],
+    "outputDir": "data",
+    "minFillsToWrite": 20,
+    "winsorClipBps": 250
+  }
+}

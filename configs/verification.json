@@ -1,0 +1,26 @@
+{
+  "startup": {
+    "enabled": true,
+    "quick": true,
+    "hardFail": true
+  },
+  "background": {
+    "enabled": true,
+    "intervalMinutes": 30,
+    "hardFail": true
+  },
+  "marketData": {
+    "windowHours": 6,
+    "cleanupNullFeatures": true,
+    "cleanupBatchSize": 250000,
+    "cleanupMaxBatches": 12
+  },
+  "realism": {
+    "enforcement": "warn",
+    "makerRealFillRateMin": 0.02,
+    "makerRealFillsPerDayMin": 20,
+    "takerCloseRatioMin": 0.15,
+    "takerOneSidedMax": 0.85,
+    "requireRuntimeLiveness": true
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@polysignal/types": ["packages/types/src/index.ts"],
+      "@polysignal/types/*": ["packages/types/src/*"],
+      "@polysignal/utils": ["packages/utils/src/index.ts"],
+      "@polysignal/utils/*": ["packages/utils/src/*"],
+      "@polysignal/data": ["packages/data/src/index.ts"],
+      "@polysignal/data/*": ["packages/data/src/*"],
+      "@polysignal/book": ["packages/book/src/index.ts"],
+      "@polysignal/book/*": ["packages/book/src/*"],
+      "@polysignal/features": ["packages/features/src/index.ts"],
+      "@polysignal/features/*": ["packages/features/src/*"],
+      "@polysignal/storage": ["packages/storage/src/index.ts"],
+      "@polysignal/storage/*": ["packages/storage/src/*"],
+      "@polysignal/configs/*": ["configs/*"]
+    }
+  }
+}
