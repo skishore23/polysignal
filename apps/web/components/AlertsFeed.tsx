@@ -16,14 +16,12 @@ type AlertRow = {
 
 type AlertItem = AlertRow & { key: string };
 
-
 type SystemHealth = {
   feedFreshnessSec: number;
   activeTokens: number;
   signalsLast5m: number;
   isHealthy: boolean;
 };
-
 
 type MakerStats = {
   openPositions: number;
@@ -143,7 +141,7 @@ export function AlertsFeed({ walletId }: { walletId?: number | null }) {
   useStream<AlertRow[]>({
     url: "/api/stream/alerts",
     enabled: true,
-    onMessage: handleAlerts,
+    onMessage: handleAlerts
   });
 
   // Fetch intelligence data
@@ -161,12 +159,10 @@ export function AlertsFeed({ walletId }: { walletId?: number | null }) {
 
     fetchIntelligence();
     const interval = setInterval(fetchIntelligence, 5000);
-      return () => clearInterval(interval);
+    return () => clearInterval(interval);
   }, [walletId]);
 
-  const actionable = alerts.filter(
-    (alert) => alert.type !== "STALE_DATA" && alert.type !== "RECONNECT"
-  );
+  const actionable = alerts.filter((alert) => alert.type !== "STALE_DATA" && alert.type !== "RECONNECT");
 
   const health = intelligence?.systemHealth;
   const makerStats = intelligence?.makerStats;
@@ -185,11 +181,15 @@ export function AlertsFeed({ walletId }: { walletId?: number | null }) {
               <span className="h-1.5 w-1.5 rounded-full bg-neon-green animate-live-breathe" />
               <span className="absolute h-1.5 w-1.5 rounded-full bg-neon-green/50 animate-live-ring" />
             </div>
-            <span className="text-ink/40" suppressHydrationWarning>{new Date(lastUpdate).toLocaleTimeString()}</span>
+            <span className="text-ink/40" suppressHydrationWarning>
+              {new Date(lastUpdate).toLocaleTimeString()}
+            </span>
           </div>
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 sm:gap-2 text-[10px]">
-          <div className={`border p-2 col-span-2 sm:col-span-1 ${health?.isHealthy ? "border-neon-green/50 bg-neon-green/5" : "border-neon-red/50 bg-neon-red/5"}`}>
+          <div
+            className={`border p-2 col-span-2 sm:col-span-1 ${health?.isHealthy ? "border-neon-green/50 bg-neon-green/5" : "border-neon-red/50 bg-neon-red/5"}`}
+          >
             <div className="text-ink/50">Feed</div>
             <div className={health?.isHealthy ? "text-neon-green" : "text-neon-red"}>
               {health ? (health.feedFreshnessSec < 60 ? "Live" : `${health.feedFreshnessSec}s stale`) : "..."}
@@ -216,7 +216,7 @@ export function AlertsFeed({ walletId }: { walletId?: number | null }) {
               <div className="text-ink">{makerStats.openPositions}</div>
             </div>
             <div className="border border-ink/20 p-1.5 sm:p-2">
-              <div className="text-ink/50">Net PnL</div>
+              <div className="text-ink/50">Gross PnL (fees excluded)</div>
               <div className={makerStats.netPnl >= 0 ? "text-neon-green" : "text-neon-red"}>
                 {makerStats.netPnl >= 0 ? "+" : ""}${makerStats.netPnl.toFixed(2)}
               </div>
@@ -235,14 +235,14 @@ export function AlertsFeed({ walletId }: { walletId?: number | null }) {
             <div className="flex items-center gap-2 text-[10px]">
               <span className="text-neon-green">{makerStats.longExposure.toFixed(0)} L</span>
               <div className="flex-1 h-1.5 bg-ink/20 rounded-full overflow-hidden">
-                <div 
+                <div
                   className="h-full bg-gradient-to-r from-neon-green to-neon-red"
-                  style={{ 
+                  style={{
                     width: "100%",
-                    clipPath: `inset(0 ${50 - makerStats.inventorySkew * 50}% 0 ${50 + makerStats.inventorySkew * 50}%)` 
+                    clipPath: `inset(0 ${50 - makerStats.inventorySkew * 50}% 0 ${50 + makerStats.inventorySkew * 50}%)`
                   }}
                 />
-                <div 
+                <div
                   className={`h-full -mt-1.5 ${makerStats.inventorySkew >= 0 ? "bg-neon-green" : "bg-neon-red"}`}
                   style={{ width: `${50 + makerStats.inventorySkew * 50}%` }}
                 />
@@ -263,7 +263,9 @@ export function AlertsFeed({ walletId }: { walletId?: number | null }) {
             {makerRiskPositions.slice(0, 5).map((pos, idx) => (
               <div key={`${pos.tokenId}-${idx}`} className="border border-ink/20 p-2 bg-black/20 text-xs">
                 <div className="flex justify-between items-start">
-                  <span className={`font-medium ${pos.riskType === "underwater" ? "text-neon-red" : "text-neon-orange"}`}>
+                  <span
+                    className={`font-medium ${pos.riskType === "underwater" ? "text-neon-red" : "text-neon-orange"}`}
+                  >
                     {pos.riskType === "underwater" ? "Underwater" : "High Exposure"}
                   </span>
                   <span className={`font-mono ${pos.pnlPct >= 0 ? "text-neon-green" : "text-neon-red"}`}>
@@ -284,9 +286,7 @@ export function AlertsFeed({ walletId }: { walletId?: number | null }) {
       {/* Maker Recent Fills */}
       {isMakerWallet && makerFills.length > 0 && (
         <div>
-          <div className="text-[10px] font-mono uppercase tracking-[0.2em] text-primary/70 mb-3">
-            Recent Fills
-          </div>
+          <div className="text-[10px] font-mono uppercase tracking-[0.2em] text-primary/70 mb-3">Recent Fills</div>
           <div className="space-y-2">
             {makerFills.slice(0, 5).map((fill, idx) => (
               <div key={`${fill.tokenId}-${fill.ts}-${idx}`} className="bg-black/30 border border-ink/20 p-2 text-xs">
@@ -298,9 +298,7 @@ export function AlertsFeed({ walletId }: { walletId?: number | null }) {
                     {new Date(fill.ts).toLocaleTimeString()}
                   </span>
                 </div>
-                <div className="text-neon-blue truncate mt-1 text-[11px]">
-                  {fill.question ?? shortId(fill.tokenId)}
-                </div>
+                <div className="text-neon-blue truncate mt-1 text-[11px]">{fill.question ?? shortId(fill.tokenId)}</div>
                 <div className="text-ink/50 text-[10px] mt-1">
                   {fill.outcome} @ {fill.price.toFixed(4)}
                 </div>
@@ -312,34 +310,41 @@ export function AlertsFeed({ walletId }: { walletId?: number | null }) {
 
       {/* Action Alerts - only show when there are alerts */}
       {actionable.length > 0 && (
-          <div>
+        <div>
           <div className="text-[10px] font-mono uppercase tracking-[0.2em] text-neon-red mb-3">Action Required</div>
-            <div className="space-y-2">
-              {actionable.map((alert) => {
-                const label = alert.question ?? alert.market_id ?? "System";
-                const tokenLabel = alert.token_id ? shortId(alert.token_id) : null;
-                const payload = alert.payload as { reason?: string; mark?: number; message?: string } | null;
-                return (
+          <div className="space-y-2">
+            {actionable.map((alert) => {
+              const label = alert.question ?? alert.market_id ?? "System";
+              const tokenLabel = alert.token_id ? shortId(alert.token_id) : null;
+              const payload = alert.payload as {
+                reason?: string;
+                mark?: number;
+                message?: string;
+              } | null;
+              return (
                 <div key={alert.id ?? alert.key} className="bg-black/40 border border-neon-red/40 p-3 text-xs">
-                    <div className="flex justify-between items-start mb-1">
-                      <span className="font-bold text-white">{alertLabel(alert.type)}</span>
-                      <span className="text-[10px] text-muted-foreground font-mono" suppressHydrationWarning>{new Date(alert.ts).toLocaleTimeString()}</span>
-                    </div>
-                    <div className="text-neon-blue mb-1 truncate">{label}</div>
-                    <div className="text-ink/60 mb-2 font-mono text-[10px]">
-                      {alert.outcome ?? (tokenLabel ? `Token ${tokenLabel}` : "system")}
-                    </div>
-                  <div className="bg-white/5 p-2 mb-2 text-ink/80">{alertAction(alert.type)}</div>
-                    {payload?.reason && <div className="text-muted-foreground text-[10px]">Reason: {payload.reason}</div>}
-                  {payload?.mark != null && <div className="text-muted-foreground text-[10px]">Mark {payload.mark.toFixed(4)}</div>}
-                    {payload?.message && <div className="text-muted-foreground text-[10px]">{payload.message}</div>}
+                  <div className="flex justify-between items-start mb-1">
+                    <span className="font-bold text-white">{alertLabel(alert.type)}</span>
+                    <span className="text-[10px] text-muted-foreground font-mono" suppressHydrationWarning>
+                      {new Date(alert.ts).toLocaleTimeString()}
+                    </span>
                   </div>
-                );
-              })}
+                  <div className="text-neon-blue mb-1 truncate">{label}</div>
+                  <div className="text-ink/60 mb-2 font-mono text-[10px]">
+                    {alert.outcome ?? (tokenLabel ? `Token ${tokenLabel}` : "system")}
+                  </div>
+                  <div className="bg-white/5 p-2 mb-2 text-ink/80">{alertAction(alert.type)}</div>
+                  {payload?.reason && <div className="text-muted-foreground text-[10px]">Reason: {payload.reason}</div>}
+                  {payload?.mark != null && (
+                    <div className="text-muted-foreground text-[10px]">Mark {payload.mark.toFixed(4)}</div>
+                  )}
+                  {payload?.message && <div className="text-muted-foreground text-[10px]">{payload.message}</div>}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
-
     </div>
   );
 }

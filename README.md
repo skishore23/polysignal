@@ -36,11 +36,13 @@ flowchart LR
 ```
 
 The canonical architecture—including formulas, data contracts, state machines, failure behavior, and extension rules—is documented in [docs/architecture.md](docs/architecture.md).
+The tested economic scope and unresolved historical/settlement assumptions are in [docs/math_assurance.md](docs/math_assurance.md).
 
 ## Requirements
 
 - Node.js 20
 - pnpm 9
+- Python 3.11 for the independent math oracle
 - macOS or Linux
 
 The repository pins pnpm through the `packageManager` field and provides `.nvmrc` for Node.
@@ -79,7 +81,7 @@ DASHBOARD_USERNAME=operator
 DASHBOARD_PASSWORD=replace-with-a-long-random-password
 ```
 
-If these are absent in production, reads remain available but mutating API requests are rejected.
+If these are absent in production, the dashboard and APIs return 503. Basic authentication protects a single private instance; it does not provide customer-to-customer isolation for a shared hosted service.
 
 ## Core commands
 
@@ -89,6 +91,7 @@ If these are absent in production, reads remain available but mutating API reque
 | `pnpm lint` | Lint all workspaces |
 | `pnpm typecheck` | Type-check the project graph |
 | `pnpm test` | Run the Vitest suite |
+| `pnpm math:assurance` | Run hand-derived, Decimal differential, and fixed-seed property checks |
 | `pnpm build` | Build all workspaces |
 | `pnpm e2e` | Run the fresh-database dashboard smoke test |
 | `pnpm go-live:gate` | Run hard decision, DB, realism, and promotion gates |
@@ -111,7 +114,7 @@ PolySignal does not treat a strategy decision as proof of edge. The persisted ch
 decision_log -> shadow_orders -> shadow_fills -> shadow_markouts
 ```
 
-One `decision_log.id` is one decision. Downstream execution composes through stable order, fill, and decision-group identifiers. Promotion requires positive realized results after costs, sufficient coverage, fresh data, realistic fill behavior, and passing burn-in/frozen-window gates.
+One `decision_log.id` is one decision. Downstream execution composes through stable order, fill, and decision-group identifiers. The current shadow position UI is gross of fill-level fees; do not use its legacy `netPnl` field as a fee-reconciled promotion result. Promotion still requires positive realized results after costs, sufficient coverage, fresh data, realistic fill behavior, and passing burn-in/frozen-window gates.
 
 Generated evidence belongs under `reports/`; databases and runtime state belong under `data/`. Neither is committed.
 

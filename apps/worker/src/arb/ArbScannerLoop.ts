@@ -3,11 +3,7 @@ import type { Logger } from "../logger";
 import { TaskScheduler } from "../utils/TaskScheduler";
 import { computeBasketCostBps } from "../trading/CostModel";
 import { ArbExecutor, type ArbLeg } from "./ArbExecutor";
-import {
-  classifyMarketProfile,
-  isShadowOnlyProfile,
-  type MarketScope
-} from "../trading/MarketProfile";
+import { classifyMarketProfile, isShadowOnlyProfile, type MarketScope } from "../trading/MarketProfile";
 import { decideMarketProfileScope } from "../trading/DecisionEngine";
 
 type ArbScannerConfig = {
@@ -51,8 +47,7 @@ type NegRiskRow = TokenQuoteRow & {
 
 const normalizeOutcome = (value: string | null): string => (value ?? "").trim().toLowerCase();
 
-const isYesNoPair = (outcomes: string[]): boolean =>
-  outcomes.includes("yes") && outcomes.includes("no");
+const isYesNoPair = (outcomes: string[]): boolean => outcomes.includes("yes") && outcomes.includes("no");
 
 const isSqliteUniqueConstraint = (err: unknown): boolean => {
   if (!err || typeof err !== "object") return false;
@@ -173,10 +168,7 @@ export class ArbScannerLoop {
       this.deps.logger.info("ArbScannerLoop disabled via config");
       return;
     }
-    this.deps.logger.info(
-      { marketScope: this.config.marketScope },
-      "Starting ArbScannerLoop..."
-    );
+    this.deps.logger.info({ marketScope: this.config.marketScope }, "Starting ArbScannerLoop...");
     this.scheduler.start();
   }
 
@@ -201,7 +193,9 @@ export class ArbScannerLoop {
 
   private loadArbPinnedMarketIds(): Set<string> | null {
     if (!this.selectArbWalletFiltersStmt) return null;
-    const rows = this.selectArbWalletFiltersStmt.all() as Array<{ marketFilterJson?: string | null }>;
+    const rows = this.selectArbWalletFiltersStmt.all() as Array<{
+      marketFilterJson?: string | null;
+    }>;
     if (!rows.length) return null;
     const ids = new Set<string>();
     for (const row of rows) {
@@ -279,17 +273,18 @@ export class ArbScannerLoop {
     eventId: string | null;
     rows: TokenQuoteRow[];
   }): Promise<number> {
+    if (input.rows.length < 2 || new Set(input.rows.map((row) => row.tokenId)).size !== input.rows.length) return 0;
     const legsBuy: ArbLeg[] = [];
-    const legsSell: ArbLeg[] = [];
-    const rowMeta = new Map<string, {
-      mid: number;
-      spread: number;
-      feeRateBps: number | null;
-      marketProfile: ReturnType<typeof classifyMarketProfile>;
-      size: number;
-    }>();
+    const rowMeta = new Map<
+      string,
+      {
+        mid: number;
+        spread: number;
+        feeRateBps: number | null;
+        marketProfile: ReturnType<typeof classifyMarketProfile>;
+      }
+    >();
     let askSum = 0;
-    let bidSum = 0;
     let basketShadowOnly = false;
 
     for (const row of input.rows) {
@@ -299,7 +294,7 @@ export class ArbScannerLoop {
       const ask = row.bestAsk as number;
       const bid = row.bestBid as number;
       const mid = row.mid as number;
-      if (ask <= 0 || bid <= 0 || mid <= 0) return 0;
+      if (ask <= 0 || ask >= 1 || bid <= 0 || bid >= 1 || bid > ask || mid <= 0 || mid >= 1) return 0;
       const marketProfile = classifyMarketProfile({
         question: row.marketQuestion,
         slug: row.marketSlug,
@@ -310,7 +305,8 @@ export class ArbScannerLoop {
       const scope = this.config.marketScope ?? "PROFILE_KNOWN_ONLY";
       const scopeDecision = decideMarketProfileScope(marketProfile, scope);
       const unknownAllowedForArb = scope === "ALL" && marketProfile === "UNKNOWN";
-      if (!scopeDecision.ok && !unknownAllowedForArb) return 0;
+      const explicitFeeFree = marketProfile === "FEE_FREE" && row.feeRateBps === 0;
+      if (!scopeDecision.ok && !unknownAllowedForArb && !explicitFeeFree) return 0;
       if (marketProfile === "UNKNOWN" && !unknownAllowedForArb) return 0;
       if (isShadowOnlyProfile(marketProfile)) {
         basketShadowOnly = true;
@@ -319,30 +315,31 @@ export class ArbScannerLoop {
         basketShadowOnly = true;
       }
       askSum += ask;
-      bidSum += bid;
-      const size = Math.max(1, this.config.maxNotionalUsd / Math.max(1, input.rows.length) / ask);
       legsBuy.push({
         tokenId: row.tokenId,
         marketId: row.marketId,
         side: "BUY",
         price: ask,
-        size
-      });
-      legsSell.push({
-        tokenId: row.tokenId,
-        marketId: row.marketId,
-        side: "SELL",
-        price: bid,
-        size
+        size: 0
       });
       rowMeta.set(row.tokenId, {
         mid,
         spread: row.spread ?? Math.max(0, ask - bid),
         feeRateBps: row.feeRateBps,
-        marketProfile,
-        size
+        marketProfile
       });
     }
+
+    // A complete set has one common share quantity. Leg-specific sizing would
+    // leave residual directional exposure while reporting a fixed payout.
+    const basketSize = this.config.maxNotionalUsd / askSum;
+    if (!Number.isFinite(basketSize) || basketSize <= 0) return 0;
+    for (const leg of legsBuy) leg.size = basketSize;
+
+    // Current BUY fee settlement removes shares; a fee-charged gross-matched
+    // basket is not a net-matched complete set. Until leg sizes are adjusted
+    // and verified against per-match fee receipts, report no arbitrage.
+    if (legsBuy.some((leg) => rowMeta.get(leg.tokenId)?.marketProfile !== "FEE_FREE")) return 0;
 
     const buyCostBps = computeBasketCostBps({
       legs: legsBuy
@@ -354,39 +351,18 @@ export class ArbScannerLoop {
             midPx: meta.mid,
             quotePx: leg.price,
             spreadPx: meta.spread,
-            sizeShares: leg.size,
+            sizeShares: basketSize,
             marketProfile: meta.marketProfile,
-            feeRateBps: meta.feeRateBps ?? 0
+            feeRateBps: meta.feeRateBps
           };
         })
         .filter((v): v is NonNullable<typeof v> => v != null),
       slippageBpsPerLeg: this.config.slippageBpsPerLeg,
       adverseSelectionBpsPerLeg: this.config.adverseSelectionBpsPerLeg,
       queueLossBpsPerLeg: this.config.queueLossBpsPerLeg,
-      rebateBpsPerLeg: this.config.rebateBpsPerLeg,
-      inventoryPenaltyBps: 0
-    });
-    const sellCostBps = computeBasketCostBps({
-      legs: legsSell
-        .map((leg) => {
-          const meta = rowMeta.get(leg.tokenId);
-          if (!meta) return null;
-          return {
-            side: "SELL" as const,
-            midPx: meta.mid,
-            quotePx: leg.price,
-            spreadPx: meta.spread,
-            sizeShares: leg.size,
-            marketProfile: meta.marketProfile,
-            feeRateBps: meta.feeRateBps ?? 0
-          };
-        })
-        .filter((v): v is NonNullable<typeof v> => v != null),
-      slippageBpsPerLeg: this.config.slippageBpsPerLeg,
-      adverseSelectionBpsPerLeg: this.config.adverseSelectionBpsPerLeg,
-      queueLossBpsPerLeg: this.config.queueLossBpsPerLeg,
-      rebateBpsPerLeg: this.config.rebateBpsPerLeg,
-      inventoryPenaltyBps: 0
+      rebateBpsPerLeg: 0,
+      inventoryPenaltyBps: 0,
+      referenceCapitalUsdc: basketSize
     });
 
     const buyGrossEdgeBps = (1 - askSum) * 10_000;
@@ -406,22 +382,8 @@ export class ArbScannerLoop {
       });
     }
 
-    const sellGrossEdgeBps = (bidSum - 1) * 10_000;
-    const sellNetEdgeBps = sellGrossEdgeBps - sellCostBps;
-    if (sellNetEdgeBps >= this.config.minNetEdgeBps) {
-      return await this.persistAndExecute({
-        ts: input.ts,
-        eventId: input.eventId,
-        type: input.type,
-        direction: "SELL_BASKET",
-        rows: input.rows,
-        legs: legsSell,
-        grossEdgeBps: sellGrossEdgeBps,
-        costBps: sellCostBps,
-        netEdgeBps: sellNetEdgeBps,
-        shadowOnly: basketShadowOnly
-      });
-    }
+    // SELL_BASKET would require proven inventory or a collateralized convert
+    // path. Neither is available in this scanner, so it is not executable.
     return 0;
   }
 

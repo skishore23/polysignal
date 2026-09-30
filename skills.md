@@ -36,6 +36,10 @@ Purpose: a map of domain areas, entry points, and gotchas for this repo.
 - Entry points: `apps/worker/src/maker`, `apps/worker/src/taker`, `configs/worker.json`.
 - Pattern: execution is hard-wired to paper mode in `apps/worker/src/config.ts`; CLOB execution adapters are dormant.
 - Canonical fee/rebate/reward math lives in `apps/worker/src/trading/PolymarketFeeMath.ts`; all lanes should consume it through `apps/worker/src/trading/CostModel.ts`.
+- Math contract and unsupported historical claims: `docs/math_assurance.md`. Run `pnpm math:assurance` after changes to fees, decision EV, rewards, baskets or inventory. The Python Decimal oracle is in `scripts/math_oracle.py`; golden, differential and property tests are in `tests/trading/math_*.test.ts`.
+- Taker quote spread is attribution, not an added cost; fee cash uses the midpoint reference denominator. Maker fill-dependent terms are conditional, and standing rewards are separate. Missing fee metadata is not explicit zero.
+- A modeled BUY fee deducted in shares is valued at the prediction target, not charged again as cash. New taker SELLs require held shares of that token.
+- Arb complete sets are presently fee-free BUY only; fee-charged net-share matching and SELL inventory/collateral are unsupported and fail closed.
 - Belief model is provider-based (`apps/worker/src/belief`) with sportsbook + microstructure priors.
 - Gotchas: any attempt to restore live routing is an architecture/safety change and must preserve wallet PnL limits, cooldowns, and promotion gates.
 - Shadow metrics gotcha: maker metrics cache refresh is now capped by fill volume and runs at a slower default cadence to keep worker event-loop liveness stable on large DBs.
@@ -122,4 +126,4 @@ Update this file when any of the following change:
 - Core data flow or gating behavior changes.
 - Scripts or configs become the new source of truth.
 
-Last updated: 2026-08-23
+Last updated: 2026-09-30

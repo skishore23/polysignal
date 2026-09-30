@@ -179,17 +179,17 @@ The canonical net edge is:
 netEdgeBps = predictedEdgeBps - totalCostBps
 ```
 
-`totalCostBps` composes spread, dynamic fee, slippage, adverse selection, queue loss, inventory penalty, rebates, and expected liquidity rewards. Terms use basis points until the explicit USDC conversion boundary.
+The executable ask/bid already includes entry spread. `spreadBps` is attribution only, not another deduction. A cash fee is normalized on the positive midpoint reference notional `sizeShares × midPx`; a modeled BUY share fee is valued at the same prediction target as gross edge before normalization. Every cost term and the final edge use that same denominator. Inventory penalty is a policy term, not posted cash. The fully specified contract and supported scope are in [math assurance](math_assurance.md).
 
 For fee-enabled profiles, the rounded taker fee is based on:
 
 ```text
-rawFeeUSDC = shares * price * feeRate * [price * (1 - price)]^exponent
+rawFeeUSDC = shares * feeRate * price * (1 - price)
 ```
 
-Fee rounding and minimum non-zero fee units are centralized in `PolymarketFeeMath.ts`. Lanes must not reproduce this formula independently.
+The current documented scenario uses five-decimal fee units. `PolymarketFeeMath.ts` performs decimal-string arithmetic and pins a version label. Historical as-of pricing requires an explicitly bounded schedule; the current documentation is not evidence of a historical effective date. The dashboard still contains a fee-equivalent estimate that is not an authoritative fill ledger.
 
-Maker expected EV additionally weights gross directional edge and half-spread capture by fill probability before subtracting costs.
+Maker quote edge includes the quote-to-mid spread exactly once. Fill-dependent edge, costs and rebates are weighted by fill probability; standing liquidity rewards and submission/inventory policy terms are separate. Liquidity order score uses the dimensionless `((maxSpreadCents - distanceCents) / maxSpreadCents)^2` factor. A raw score is not a payout.
 
 ## 9. Strategy lanes
 
@@ -203,7 +203,7 @@ The taker loop loads wallets with `auto_trade_enabled=1 AND maker_enabled=0`, co
 
 ### Structural arbitrage
 
-The arb scanner evaluates binary YES/NO parity and negRisk basket inequalities. Opportunities and multi-leg executions share a `decision_group_id`. Batch size is capped by the CLOB order limit.
+The arb scanner evaluates binary YES/NO parity and negRisk basket inequalities. Opportunities and multi-leg executions share a `decision_group_id`. Batch size is capped by the CLOB order limit. Only gross-matched fee-free BUY complete sets can currently be submitted as arb. Fee-charged BUY baskets lack verified net-share matching; SELL baskets lack proven inventory/collateral, so both fail closed instead of being labeled completed arbitrage.
 
 ## 10. Wallet and regime gates
 

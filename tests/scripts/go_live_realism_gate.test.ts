@@ -84,8 +84,9 @@ describe("go-live realism gate", () => {
     );
 
     const result = spawnSync(
-      "npx",
+      process.execPath,
       [
+        "--import",
         "tsx",
         "scripts/go-live-gate.ts",
         "--db",

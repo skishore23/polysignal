@@ -24,10 +24,14 @@ jobs:
         with:
           node-version: "20"
           cache: "pnpm"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - run: pnpm install --frozen-lockfile
       - run: pnpm run lint
       - run: pnpm run typecheck
       - run: pnpm test
+      - run: pnpm run math:assurance
       - run: pnpm run build
       - run: pnpm exec playwright install --with-deps
       - run: pnpm run e2e

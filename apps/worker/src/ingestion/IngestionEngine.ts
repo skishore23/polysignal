@@ -76,18 +76,12 @@ const normalizeIdList = (value: unknown): string[] => {
     if (!Array.isArray(value)) return [];
     return Array.from(
         new Set(
-            value
-                .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
-                .filter((entry) => entry.length > 0)
+            value.map((entry) => (typeof entry === "string" ? entry.trim() : "")).filter((entry) => entry.length > 0)
         )
     );
 };
 
-const buildBtc5mSlugCandidates = (
-    nowEpochSeconds: number,
-    pastMinutes: number,
-    futureMinutes: number
-): string[] => {
+const buildBtc5mSlugCandidates = (nowEpochSeconds: number, pastMinutes: number, futureMinutes: number): string[] => {
     const start = toFiveMinuteBucket(nowEpochSeconds - pastMinutes * 60);
     const end = toFiveMinuteBucket(nowEpochSeconds + futureMinutes * 60);
     const slugs: string[] = [];
@@ -99,50 +93,56 @@ const buildBtc5mSlugCandidates = (
 
 const parseEventMeta = (market: TopMarket["market"]): ParsedEventMeta => {
     const raw = market as Record<string, unknown>;
-    const directEventId = typeof raw.eventId === "string"
-        ? raw.eventId
-        : typeof raw.event_id === "string"
-            ? (raw.event_id as string)
-            : null;
-    const directNegRisk = typeof raw.negRisk === "boolean"
-        ? raw.negRisk
-        : typeof raw.neg_risk === "boolean"
-            ? (raw.neg_risk as boolean)
-            : false;
+    const directEventId =
+        typeof raw.eventId === "string"
+            ? raw.eventId
+            : typeof raw.event_id === "string"
+              ? (raw.event_id as string)
+              : null;
+    const directNegRisk =
+        typeof raw.negRisk === "boolean"
+            ? raw.negRisk
+            : typeof raw.neg_risk === "boolean"
+              ? (raw.neg_risk as boolean)
+              : false;
 
-    const events = Array.isArray(raw.events) ? raw.events as Array<Record<string, unknown>> : [];
+    const events = Array.isArray(raw.events) ? (raw.events as Array<Record<string, unknown>>) : [];
     const firstEvent = events[0];
-    const eventId = directEventId
-        ?? (typeof firstEvent?.id === "string" ? firstEvent.id : null);
+    const eventId = directEventId ?? (typeof firstEvent?.id === "string" ? firstEvent.id : null);
     const eventSlug = typeof firstEvent?.slug === "string" ? firstEvent.slug : null;
-    const eventTitle = typeof firstEvent?.title === "string"
-        ? firstEvent.title
-        : typeof firstEvent?.name === "string"
-            ? firstEvent.name
-            : null;
+    const eventTitle =
+        typeof firstEvent?.title === "string"
+            ? firstEvent.title
+            : typeof firstEvent?.name === "string"
+              ? firstEvent.name
+              : null;
     const marketEventStartTime = typeof raw.eventStartTime === "string" ? raw.eventStartTime : null;
-    const marketEndDate = typeof raw.endDate === "string"
-        ? raw.endDate
-        : typeof raw.end_date === "string"
-            ? (raw.end_date as string)
-            : null;
-    const eventStartDate = marketEventStartTime
-        ?? (typeof firstEvent?.startDate === "string"
+    const marketEndDate =
+        typeof raw.endDate === "string"
+            ? raw.endDate
+            : typeof raw.end_date === "string"
+              ? (raw.end_date as string)
+              : null;
+    const eventStartDate =
+        marketEventStartTime ??
+        (typeof firstEvent?.startDate === "string"
             ? firstEvent.startDate
             : typeof firstEvent?.start_date === "string"
-                ? firstEvent.start_date
-                : null);
-    const eventEndDate = marketEndDate
-        ?? (typeof firstEvent?.endDate === "string"
+              ? firstEvent.start_date
+              : null);
+    const eventEndDate =
+        marketEndDate ??
+        (typeof firstEvent?.endDate === "string"
             ? firstEvent.endDate
             : typeof firstEvent?.end_date === "string"
-                ? firstEvent.end_date
-                : null);
-    const eventNegRisk = typeof firstEvent?.negRisk === "boolean"
-        ? firstEvent.negRisk
-        : typeof firstEvent?.neg_risk === "boolean"
-            ? firstEvent.neg_risk
-            : directNegRisk;
+              ? firstEvent.end_date
+              : null);
+    const eventNegRisk =
+        typeof firstEvent?.negRisk === "boolean"
+            ? firstEvent.negRisk
+            : typeof firstEvent?.neg_risk === "boolean"
+              ? firstEvent.neg_risk
+              : directNegRisk;
     return {
         eventId,
         eventSlug,
@@ -172,10 +172,10 @@ export class IngestionEngine {
 
     private tokenIds: string[] = [];
     private marketIds: string[] = [];
-    private conditionIds: string[] = [];  // CTF condition IDs
+    private conditionIds: string[] = []; // CTF condition IDs
     private tokenToMarket = new Map<string, string>();
-    private tokenToCondition = new Map<string, string>();  // token -> conditionId
-    private conditionToTokens = new Map<string, string[]>();  // conditionId -> tokens
+    private tokenToCondition = new Map<string, string>(); // token -> conditionId
+    private conditionToTokens = new Map<string, string[]>(); // conditionId -> tokens
     private marketToTokens = new Map<string, string[]>();
     private readyTokens = new Set<string>();
     private noOrderbookTokens = new Set<string>();
@@ -204,10 +204,12 @@ export class IngestionEngine {
 
     private getPinnedMarketIdsFromWallets(): string[] {
         try {
-            const rows = this.deps.sqlite.prepare(
-                `SELECT market_filter_json as marketFilterJson
+            const rows = this.deps.sqlite
+                .prepare(
+                    `SELECT market_filter_json as marketFilterJson
                  FROM wallets`
-            ).all() as Array<{ marketFilterJson?: string | null }>;
+                )
+                .all() as Array<{ marketFilterJson?: string | null }>;
 
             const ids = new Set<string>();
             for (const row of rows) {
@@ -233,8 +235,9 @@ export class IngestionEngine {
 
     private loadBtc5mWalletRows(): Btc5mWalletRow[] {
         try {
-            return this.deps.sqlite.prepare(
-                `SELECT
+            return this.deps.sqlite
+                .prepare(
+                    `SELECT
                     id,
                     name,
                     market_filter_json as marketFilterJson,
@@ -243,7 +246,8 @@ export class IngestionEngine {
                  WHERE name LIKE ?
                    AND name NOT LIKE ?
                  ORDER BY id ASC`
-            ).all(BTC_5M_WALLET_NAME_LIKE, `${BTC_5M_ARB_WALLET_NAME_PREFIX}%`) as Btc5mWalletRow[];
+                )
+                .all(BTC_5M_WALLET_NAME_LIKE, `${BTC_5M_ARB_WALLET_NAME_PREFIX}%`) as Btc5mWalletRow[];
         } catch {
             return [];
         }
@@ -279,11 +283,8 @@ export class IngestionEngine {
         const acceptingOrders = raw.acceptingOrders ?? raw.accepting_orders;
         if (acceptingOrders === false) return false;
 
-        const endDate = typeof raw.endDate === "string"
-            ? raw.endDate
-            : typeof raw.end_date === "string"
-                ? raw.end_date
-                : null;
+        const endDate =
+            typeof raw.endDate === "string" ? raw.endDate : typeof raw.end_date === "string" ? raw.end_date : null;
         if (endDate && endDate.trim().length > 0) {
             const endMs = Date.parse(endDate);
             if (Number.isFinite(endMs) && endMs < nowMs - 60_000) return false;
@@ -293,11 +294,8 @@ export class IngestionEngine {
 
     private rankBtc5mMarketEndMs(market: TopMarket["market"]): number {
         const raw = market as Record<string, unknown>;
-        const endDate = typeof raw.endDate === "string"
-            ? raw.endDate
-            : typeof raw.end_date === "string"
-                ? raw.end_date
-                : null;
+        const endDate =
+            typeof raw.endDate === "string" ? raw.endDate : typeof raw.end_date === "string" ? raw.end_date : null;
         if (endDate && endDate.trim().length > 0) {
             const parsed = Date.parse(endDate);
             if (Number.isFinite(parsed)) return parsed;
@@ -371,9 +369,10 @@ export class IngestionEngine {
                 }
             }
 
-            const allowedKinds = Array.isArray(parsed.allowedKinds) && parsed.allowedKinds.length > 0
-                ? parsed.allowedKinds
-                : this.inferAllowedKindsForBtc5mWallet(wallet.name);
+            const allowedKinds =
+                Array.isArray(parsed.allowedKinds) && parsed.allowedKinds.length > 0
+                    ? parsed.allowedKinds
+                    : this.inferAllowedKindsForBtc5mWallet(wallet.name);
             const requireActive = typeof parsed.requireActive === "boolean" ? parsed.requireActive : true;
             const nextFilter = {
                 ...parsed,
@@ -579,16 +578,19 @@ export class IngestionEngine {
 
     private persistUniverse(
         markets: TopMarket[],
-        marketMeta: Map<string, {
-            rewardsMinSize: number | null;
-            rewardsMaxSpread: number | null;
-            rewardsRatesJson: string | null;
-            rewardsUpdatedAt: number;
-            makerBaseFee: number | null;
-            takerBaseFee: number | null;
-            minimumOrderSize: number | null;
-            minimumTickSize: number | null;
-        }>,
+        marketMeta: Map<
+            string,
+            {
+                rewardsMinSize: number | null;
+                rewardsMaxSpread: number | null;
+                rewardsRatesJson: string | null;
+                rewardsUpdatedAt: number;
+                makerBaseFee: number | null;
+                takerBaseFee: number | null;
+                minimumOrderSize: number | null;
+                minimumTickSize: number | null;
+            }
+        >,
         feeRates: Map<string, number>
     ): void {
         const now = Date.now();
@@ -655,10 +657,7 @@ export class IngestionEngine {
             }
         }
 
-        this.deps.logger.info(
-            { marketsUpserted, tokensUpserted },
-            "Universe persisted to database"
-        );
+        this.deps.logger.info({ marketsUpserted, tokensUpserted }, "Universe persisted to database");
     }
 
     private async refreshUniverseOnStartup(): Promise<void> {
@@ -680,12 +679,14 @@ export class IngestionEngine {
         }
 
         this.deps.logger.warn(
-            { attempts, tokensTracked: this.tokenIds.length, conditionsTracked: this.conditionIds.length },
+            {
+                attempts,
+                tokensTracked: this.tokenIds.length,
+                conditionsTracked: this.conditionIds.length
+            },
             "Startup universe load exhausted retries"
         );
-        this.deps.logger.warn(
-            "Continuing startup with empty scoped universe (zero-trade fail-closed mode)"
-        );
+        this.deps.logger.warn("Continuing startup with empty scoped universe (zero-trade fail-closed mode)");
     }
 
     private async refreshUniverse(): Promise<boolean> {
@@ -694,7 +695,10 @@ export class IngestionEngine {
         try {
             await this.maybeAutoRefreshBtc5mWalletPins();
 
-            const top = await this.gamma.getTopMarkets({ limit: this.config.topN, logger: this.deps.logger });
+            const top = await this.gamma.getTopMarkets({
+                limit: this.config.topN,
+                logger: this.deps.logger
+            });
             const pinnedMarketIds = this.getPinnedMarketIdsFromWallets();
             const pinnedMarketIdSet = new Set(pinnedMarketIds);
             if (pinnedMarketIds.length > 0) {
@@ -758,9 +762,8 @@ export class IngestionEngine {
             let skippedUnknown = 0;
             const skipReasons = new Map<string, number>();
             for (const m of top) {
-                const tokenFeeRateBps = m.tokenIds
-                    .map((tokenId) => feeRates.get(tokenId) ?? null)
-                    .find((v) => v != null && v > 0) ?? null;
+                const tokenFeeRateBps =
+                    m.tokenIds.map((tokenId) => feeRates.get(tokenId) ?? null).find((v) => v != null) ?? null;
                 const eventMeta = eventMetaByMarketId.get(m.market.id) ?? parseEventMeta(m.market);
                 const profile = classifyMarketProfile({
                     question: m.market.question,
@@ -794,16 +797,19 @@ export class IngestionEngine {
                 );
             }
 
-            const marketMeta = new Map<string, {
-                rewardsMinSize: number | null;
-                rewardsMaxSpread: number | null;
-                rewardsRatesJson: string | null;
-                rewardsUpdatedAt: number;
-                makerBaseFee: number | null;
-                takerBaseFee: number | null;
-                minimumOrderSize: number | null;
-                minimumTickSize: number | null;
-            }>();
+            const marketMeta = new Map<
+                string,
+                {
+                    rewardsMinSize: number | null;
+                    rewardsMaxSpread: number | null;
+                    rewardsRatesJson: string | null;
+                    rewardsUpdatedAt: number;
+                    makerBaseFee: number | null;
+                    takerBaseFee: number | null;
+                    minimumOrderSize: number | null;
+                    minimumTickSize: number | null;
+                }
+            >();
             const marketsToFetch = scopedTop.filter((m) => m.conditionId != null);
             if (marketsToFetch.length > 0) {
                 await this.mapWithConcurrency(marketsToFetch, 6, async (m) => {
@@ -836,13 +842,13 @@ export class IngestionEngine {
                 if (filterMarketId && m.market.id !== filterMarketId) continue;
 
                 const marketId = m.market.id;
-                const conditionId = m.conditionId;  // CTF condition ID
-                
+                const conditionId = m.conditionId; // CTF condition ID
+
                 newMarketIds.push(marketId);
                 if (conditionId) {
                     newConditionIds.push(conditionId);
                 }
-                
+
                 const tokens: string[] = [];
 
                 for (const tid of m.tokenIds) {
@@ -929,7 +935,10 @@ export class IngestionEngine {
                     );
                 } else {
                     this.deps.logger.warn(
-                        { activeLimit: this.config.activeTokenLimit, windowMinutes: this.config.activeTokenWindowMinutes },
+                        {
+                            activeLimit: this.config.activeTokenLimit,
+                            windowMinutes: this.config.activeTokenWindowMinutes
+                        },
                         "Active token filter empty; keeping full universe"
                     );
                 }
@@ -962,11 +971,11 @@ export class IngestionEngine {
 
             if (prevConditions !== nextConditions || prevTokens !== nextTokens) {
                 this.deps.logger.info(
-                    { 
-                        markets: this.marketIds.length, 
+                    {
+                        markets: this.marketIds.length,
                         tokens: this.tokenIds.length,
                         conditions: this.conditionIds.length,
-                        filter: filterMarketId ?? "NONE" 
+                        filter: filterMarketId ?? "NONE"
                     },
                     "Universe updated"
                 );
@@ -1005,11 +1014,7 @@ export class IngestionEngine {
         }
     }
 
-    private async mapWithConcurrency<T>(
-        items: T[],
-        limit: number,
-        fn: (item: T) => Promise<void>
-    ): Promise<void> {
+    private async mapWithConcurrency<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
         const queue = items.slice();
         const workers = Array.from({ length: Math.max(1, limit) }, async () => {
             while (queue.length > 0) {
@@ -1037,7 +1042,10 @@ export class IngestionEngine {
         if (activeFromLiveFeed.length > 0) {
             return new Set(activeFromLiveFeed);
         }
-        const rows = this.activeTokensStmt.all({ minTs, limit: this.config.activeTokenLimit }) as Array<{ tokenId: string }>;
+        const rows = this.activeTokensStmt.all({
+            minTs,
+            limit: this.config.activeTokenLimit
+        }) as Array<{ tokenId: string }>;
         if (!rows.length) return null;
         return new Set(rows.map((r) => r.tokenId));
     }
@@ -1145,7 +1153,11 @@ export class IngestionEngine {
         let idx = 0;
 
         this.deps.logger.info(
-            { tokenCount: this.tokenIds.length, primingCount: snapshotTokenIds.length, skippedKnownNoBook },
+            {
+                tokenCount: this.tokenIds.length,
+                primingCount: snapshotTokenIds.length,
+                skippedKnownNoBook
+            },
             "Priming snapshots via REST"
         );
 

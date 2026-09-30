@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  classifyMarketProfile,
-  isShadowOnlyProfile
-} from "../../apps/worker/src/trading/MarketProfile";
+import { classifyMarketProfile, isShadowOnlyProfile } from "../../apps/worker/src/trading/MarketProfile";
 
 describe("classifyMarketProfile", () => {
   it("classifies explicit crypto 15m markets as CRYPTO_15M when fee-enabled", () => {
@@ -39,5 +36,11 @@ describe("classifyMarketProfile", () => {
     expect(isShadowOnlyProfile("CRYPTO_5M")).toBe(true);
     expect(isShadowOnlyProfile("CRYPTO_15M")).toBe(false);
     expect(isShadowOnlyProfile("SPORTS")).toBe(false);
+  });
+
+  it("distinguishes an explicit zero token fee from unavailable metadata", () => {
+    const market = { question: "Bitcoin Up or Down - 2:00AM-2:15AM ET", takerBaseFee: 0 };
+    expect(classifyMarketProfile(market)).toBe("UNKNOWN");
+    expect(classifyMarketProfile({ ...market, feeRateBps: 0 })).toBe("FEE_FREE");
   });
 });

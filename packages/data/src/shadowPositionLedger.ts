@@ -26,18 +26,14 @@ export type ShadowPositionState = {
 };
 
 export type ShadowPositionMark = {
-  unrealizedPnl: number;
-  longExposure: number;
-  shortExposure: number;
+  unrealizedPnl: number | null;
+  longExposure: number | null;
+  shortExposure: number | null;
 };
 
-export const shadowPositionKey = (walletId: number, tokenId: string): string =>
-  `${walletId}:${tokenId}`;
+export const shadowPositionKey = (walletId: number, tokenId: string): string => `${walletId}:${tokenId}`;
 
-export const createShadowPositionState = (
-  walletId: number,
-  tokenId: string
-): ShadowPositionState => ({
+export const createShadowPositionState = (walletId: number, tokenId: string): ShadowPositionState => ({
   walletId,
   tokenId,
   position: 0,
@@ -57,6 +53,7 @@ const validFill = (fill: ShadowFillInput): boolean =>
   Number.isFinite(fill.price) &&
   Number.isFinite(fill.size) &&
   fill.price > 0 &&
+  fill.price <= 1 &&
   fill.size > 0 &&
   Number.isFinite(fill.ts);
 
@@ -64,10 +61,7 @@ const validFill = (fill: ShadowFillInput): boolean =>
  * Applies one fill to a position state with deterministic cycle accounting.
  * A sign flip closes one cycle and immediately opens another.
  */
-export const applyShadowFillToState = (
-  current: ShadowPositionState,
-  fill: ShadowFillInput
-): ShadowPositionState => {
+export const applyShadowFillToState = (current: ShadowPositionState, fill: ShadowFillInput): ShadowPositionState => {
   if (!validFill(fill)) return current;
 
   const prevPos = current.position;
@@ -88,14 +82,14 @@ export const applyShadowFillToState = (
     const sameDirection = (prevPos > 0 && delta > 0) || (prevPos < 0 && delta < 0);
     if (sameDirection) {
       const totalAbs = Math.abs(prevPos) + Math.abs(delta);
-      nextAvg = totalAbs > 0
-        ? (Math.abs(prevPos) * prevAvg + Math.abs(delta) * fill.price) / totalAbs
-        : fill.price;
+      nextAvg = totalAbs > 0 ? (Math.abs(prevPos) * prevAvg + Math.abs(delta) * fill.price) / totalAbs : fill.price;
     } else {
       const closingSize = Math.min(Math.abs(prevPos), Math.abs(delta));
       const pnlPerUnit = prevPos > 0 ? fill.price - prevAvg : prevAvg - fill.price;
       nextRealized = prevRealized + pnlPerUnit * closingSize;
-      nextAvg = nextPos === 0 ? 0 : fill.price;
+      // A reduction leaves the original lot basis intact. Only residual shares
+      // opened across a sign flip acquire the new fill price.
+      nextAvg = nextPos === 0 ? 0 : flips ? fill.price : prevAvg;
     }
   }
 
@@ -145,9 +139,7 @@ export const applyShadowFillToState = (
   };
 };
 
-export const buildShadowPositionLedger = (
-  fills: ShadowFillInput[]
-): Map<string, ShadowPositionState> => {
+export const buildShadowPositionLedger = (fills: ShadowFillInput[]): Map<string, ShadowPositionState> => {
   const sorted = [...fills].sort((a, b) => a.ts - b.ts);
   const out = new Map<string, ShadowPositionState>();
   for (const fill of sorted) {
@@ -161,9 +153,20 @@ export const buildShadowPositionLedger = (
 
 export const computeShadowPositionUnrealizedPnl = (
   state: Pick<ShadowPositionState, "position" | "avgEntry">,
-  mark: number
-): number => {
-  if (!Number.isFinite(mark) || mark <= 0 || state.position === 0) return 0;
+  mark: number | null
+): number | null => {
+  if (
+    mark == null ||
+    !Number.isFinite(mark) ||
+    mark < 0 ||
+    mark > 1 ||
+    !Number.isFinite(state.position) ||
+    !Number.isFinite(state.avgEntry) ||
+    state.avgEntry < 0 ||
+    state.avgEntry > 1
+  )
+    return null;
+  if (state.position === 0) return 0;
   return state.position > 0
     ? (mark - state.avgEntry) * state.position
     : (state.avgEntry - mark) * Math.abs(state.position);
@@ -171,11 +174,13 @@ export const computeShadowPositionUnrealizedPnl = (
 
 export const markShadowPosition = (
   state: Pick<ShadowPositionState, "position" | "avgEntry">,
-  mark: number
+  mark: number | null
 ): ShadowPositionMark => {
-  const safeMark = Number.isFinite(mark) && mark > 0 ? mark : 0;
-  const unrealizedPnl = computeShadowPositionUnrealizedPnl(state, safeMark);
-  const longExposure = state.position > 0 && safeMark > 0 ? state.position * safeMark : 0;
-  const shortExposure = state.position < 0 && safeMark > 0 ? Math.abs(state.position) * safeMark : 0;
+  const unrealizedPnl = computeShadowPositionUnrealizedPnl(state, mark);
+  if (unrealizedPnl == null || mark == null) {
+    return { unrealizedPnl: null, longExposure: null, shortExposure: null };
+  }
+  const longExposure = state.position > 0 ? state.position * mark : 0;
+  const shortExposure = state.position < 0 ? Math.abs(state.position) * mark : 0;
   return { unrealizedPnl, longExposure, shortExposure };
 };

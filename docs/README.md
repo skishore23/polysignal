@@ -3,6 +3,7 @@
 The maintained documentation set is intentionally small:
 
 - [Architecture](architecture.md): canonical runtime, mathematical contracts, persistence, safety, and failure behavior.
+- [Math assurance](math_assurance.md): current accounting contract, verified fixtures, fee-rule versioning, and unsupported claims.
 - [Wallet strategy filters](wallet_strategy_filters.md): wallet-level market cohort contract and fail-closed semantics.
 - [Regime research UI](regime-research-ui.md): interpretation of Markov regime data and the `/regimes` page.
 - [Regime gate debugging](regime_gate_debugging.md): deterministic commands for diagnosing idle maker/taker loops.

@@ -1,9 +1,5 @@
 import { getDb } from "./db";
-import {
-  buildShadowPositionLedger,
-  markShadowPosition,
-  type ShadowFillInput
-} from "@polysignal/data";
+import { buildShadowPositionLedger, markShadowPosition, type ShadowFillInput } from "@polysignal/data";
 
 export type TakerSystemMetrics = {
   fillCount: number;
@@ -87,17 +83,17 @@ type RewardStats = {
 const SINGLE_SIDED_MID_MIN = 0.1;
 const SINGLE_SIDED_MID_MAX = 0.9;
 const SINGLE_SIDED_SCALE = 3.0;
-const MIN_NON_ZERO_FEE_USDC = 0.0001;
-const FEE_ROUND_DECIMALS = 4;
-const CRYPTO_15M_FEE_RATE = 0.25;
-const CRYPTO_15M_FEE_EXPONENT = 2;
-const CRYPTO_5M_FEE_RATE = 0.25;
-const CRYPTO_5M_FEE_EXPONENT = 2;
-const SPORTS_FEE_RATE = 0.0175;
+const MIN_NON_ZERO_FEE_USDC = 0.00001;
+const FEE_ROUND_DECIMALS = 5;
+const CRYPTO_15M_FEE_RATE = 0.07;
+const CRYPTO_15M_FEE_EXPONENT = 1;
+const CRYPTO_5M_FEE_RATE = 0.07;
+const CRYPTO_5M_FEE_EXPONENT = 1;
+const SPORTS_FEE_RATE = 0.05;
 const SPORTS_FEE_EXPONENT = 1;
 const CRYPTO_15M_REBATE_POOL_PCT = 0.2;
-const CRYPTO_5M_REBATE_POOL_PCT = 0;
-const SPORTS_REBATE_POOL_PCT = 0.25;
+const CRYPTO_5M_REBATE_POOL_PCT = 0.2;
+const SPORTS_REBATE_POOL_PCT = 0.15;
 const MAX_SHADOW_FILLS_FOR_METRICS = 20_000;
 const DECISION_LOG_RECENT_LIMIT = 100_000;
 const RUNTIME_SKIP_ROW_LIMIT = 100_000;
@@ -176,12 +172,7 @@ const computeRewardScore = (row: RewardOrderRow): number => {
   const minSize = row.rewardMinSize ?? 0;
   const multiplier = parseRewardMultiplier(row.rewardRatesJson);
 
-  if (
-    !Number.isFinite(mid) ||
-    !Number.isFinite(price) ||
-    !Number.isFinite(size) ||
-    maxSpreadCents == null
-  ) {
+  if (!Number.isFinite(mid) || !Number.isFinite(price) || !Number.isFinite(size) || maxSpreadCents == null) {
     return 0;
   }
 
@@ -201,8 +192,8 @@ const classifyMarketProfile = (input: {
   feeRateBps: number | null;
   takerBaseFee: number | null;
 }): "CRYPTO_15M" | "CRYPTO_5M" | "SPORTS" | "UNKNOWN" | "FEE_FREE" => {
-  const feeEnabled = (input.feeRateBps ?? 0) > 0 || (input.takerBaseFee ?? 0) > 0;
-  if (!feeEnabled) return "FEE_FREE";
+  if (input.feeRateBps == null || !Number.isFinite(input.feeRateBps) || input.feeRateBps < 0) return "UNKNOWN";
+  if (input.feeRateBps === 0) return "FEE_FREE";
   const haystack = [input.question ?? "", input.slug ?? "", input.eventTitle ?? ""].join(" ").toLowerCase();
   const isCrypto = /\b(crypto|bitcoin|btc|ethereum|eth|solana|sol|doge|xrp|ada|bnb)\b/.test(haystack);
   const is5m = /\b(?:5\s*(?:minute|min|m)|five[\s-]*minute)\b/.test(haystack);
@@ -231,19 +222,21 @@ const computeFeeEquivalentUsdc = (input: {
   const price = Number.isFinite(input.price) ? Math.max(0, input.price) : 0;
   if (shares <= 0 || price <= 0) return 0;
 
-  const fallback = input.marketProfile === "CRYPTO_15M"
-    ? { feeRate: CRYPTO_15M_FEE_RATE, exponent: CRYPTO_15M_FEE_EXPONENT }
-    : input.marketProfile === "CRYPTO_5M"
-      ? { feeRate: CRYPTO_5M_FEE_RATE, exponent: CRYPTO_5M_FEE_EXPONENT }
-    : input.marketProfile === "SPORTS"
-      ? { feeRate: SPORTS_FEE_RATE, exponent: SPORTS_FEE_EXPONENT }
-      : null;
+  const fallback =
+    input.marketProfile === "CRYPTO_15M"
+      ? { feeRate: CRYPTO_15M_FEE_RATE, exponent: CRYPTO_15M_FEE_EXPONENT }
+      : input.marketProfile === "CRYPTO_5M"
+        ? { feeRate: CRYPTO_5M_FEE_RATE, exponent: CRYPTO_5M_FEE_EXPONENT }
+        : input.marketProfile === "SPORTS"
+          ? { feeRate: SPORTS_FEE_RATE, exponent: SPORTS_FEE_EXPONENT }
+          : null;
   if (!fallback) return 0;
 
-  const feeRate = Number.isFinite(input.feeRateBps) && (input.feeRateBps as number) > 0
-    ? (input.feeRateBps as number) / 10_000
-    : fallback.feeRate;
-  const raw = shares * price * feeRate * Math.pow(price * (1 - price), fallback.exponent);
+  const feeRate =
+    Number.isFinite(input.feeRateBps) && (input.feeRateBps as number) >= 0
+      ? (input.feeRateBps as number) / 10_000
+      : fallback.feeRate;
+  const raw = shares * feeRate * Math.pow(price * (1 - price), fallback.exponent);
   return roundFeeUsdc(raw);
 };
 
@@ -351,10 +344,7 @@ const computeRewardStats24h = (
   }
 };
 
-const computeShadowMakerMetrics = (
-  sqlite: ReturnType<typeof getDb>["sqlite"],
-  walletId: number | null
-) => {
+const computeShadowMakerMetrics = (sqlite: ReturnType<typeof getDb>["sqlite"], walletId: number | null) => {
   const since24h = Date.now() - 24 * 60 * 60 * 1000;
   const walletClause = walletId != null ? "AND o.wallet_id = @walletId" : "";
   const params =
@@ -362,8 +352,9 @@ const computeShadowMakerMetrics = (
       ? { walletId, since: since24h, limit: MAX_SHADOW_FILLS_FOR_METRICS }
       : { since: since24h, limit: MAX_SHADOW_FILLS_FOR_METRICS };
 
-  const fills = sqlite.prepare(
-    `SELECT
+  const fills = sqlite
+    .prepare(
+      `SELECT
        o.wallet_id as walletId,
        o.token_id as tokenId,
        o.side as side,
@@ -378,7 +369,8 @@ const computeShadowMakerMetrics = (
        ${walletClause}
      ORDER BY f.ts DESC, f.id DESC
      LIMIT @limit`
-  ).all(params) as ShadowFillRow[];
+    )
+    .all(params) as ShadowFillRow[];
   fills.reverse();
 
   const fillCount = fills.length;
@@ -426,9 +418,9 @@ const computeShadowMakerMetrics = (
       openPositions += 1;
     }
 
-    const mark = marks.get(state.tokenId) ?? state.avgEntry;
-    if (!Number.isFinite(mark) || mark <= 0) continue;
+    const mark = marks.get(state.tokenId) ?? null;
     const marked = markShadowPosition(state, mark);
+    if (marked.unrealizedPnl == null || marked.longExposure == null || marked.shortExposure == null) continue;
     longExposure += marked.longExposure;
     shortExposure += marked.shortExposure;
     totalUnrealized += marked.unrealizedPnl;
@@ -476,8 +468,9 @@ const computeTakerMetrics = (
       ? { walletId, since: since24h, limit: MAX_SHADOW_FILLS_FOR_METRICS }
       : { since: since24h, limit: MAX_SHADOW_FILLS_FOR_METRICS };
 
-  const fills = sqlite.prepare(
-    `SELECT
+  const fills = sqlite
+    .prepare(
+      `SELECT
        o.wallet_id as walletId,
        o.token_id as tokenId,
        o.side as side,
@@ -492,7 +485,8 @@ const computeTakerMetrics = (
        ${walletClause}
      ORDER BY f.ts DESC, f.id DESC
      LIMIT @limit`
-  ).all(params) as TakerFillRow[];
+    )
+    .all(params) as TakerFillRow[];
   fills.reverse();
 
   if (!fills.length) {
@@ -551,9 +545,10 @@ const computeTakerMetrics = (
     winCount += state.winCount;
     lossCount += state.lossCount;
     totalHoldSec += state.totalHoldSec;
-    const mark = marks.get(state.tokenId) ?? state.avgEntry;
-    if (Number.isFinite(mark) && mark > 0) {
+    const mark = marks.get(state.tokenId) ?? null;
+    if (mark != null) {
       const marked = markShadowPosition(state, mark);
+      if (marked.unrealizedPnl == null || marked.longExposure == null || marked.shortExposure == null) continue;
       unrealizedPnl += marked.unrealizedPnl;
       longExposure += marked.longExposure;
       shortExposure += marked.shortExposure;
@@ -687,8 +682,9 @@ const computeAlphaPayload = (
 
   const edgeCost = (() => {
     try {
-      return sqlite.prepare(
-        `SELECT
+      return sqlite
+        .prepare(
+          `SELECT
            COALESCE(strategy_lane,
              CASE
                WHEN kind IN ('MAKER_BID', 'MAKER_ASK') THEN 'MAKER'
@@ -708,7 +704,8 @@ const computeAlphaPayload = (
          WHERE ts >= @since
            ${walletClause}
          GROUP BY lane`
-      ).all(params) as Array<{
+        )
+        .all(params) as Array<{
         lane: string | null;
         orders: number;
         avgPredEdgeBps: number | null;
@@ -856,11 +853,7 @@ const computeMakerMetrics = (
               maker_real_fills: number;
             }
           | undefined;
-        if (
-          cached &&
-          cached.window_hours === windowHours &&
-          cached.updated_ts > Date.now() - CACHE_MAX_AGE_MS
-        ) {
+        if (cached && cached.window_hours === windowHours && cached.updated_ts > Date.now() - CACHE_MAX_AGE_MS) {
           return cached.maker_orders > 0 ? cached.maker_real_fills / cached.maker_orders : 0;
         }
       } catch {
@@ -872,20 +865,26 @@ const computeMakerMetrics = (
       const since = since24h;
       const idClause = walletId != null ? "AND wallet_id = @walletId" : "";
       const params = walletId != null ? { since, walletId } : { since };
-      const makerOrders = (sqlite.prepare(
-        `SELECT COUNT(*) as c FROM shadow_orders
+      const makerOrders = (
+        sqlite
+          .prepare(
+            `SELECT COUNT(*) as c FROM shadow_orders
          WHERE ts >= @since AND kind IN ('MAKER_BID','MAKER_ASK') ${idClause}`
-      ).get(params) as { c: number }).c;
-      const makerFills = (sqlite.prepare(
-        `SELECT COUNT(*) as c
+          )
+          .get(params) as { c: number }
+      ).c;
+      const makerFills = (
+        sqlite
+          .prepare(
+            `SELECT COUNT(*) as c
          FROM shadow_fills f
          JOIN shadow_orders o ON o.id = f.order_id
          WHERE f.ts >= @since
            AND f.method != 'synthetic_fill'
-           AND o.kind IN ('MAKER_BID','MAKER_ASK') ${
-           walletId != null ? "AND o.wallet_id = @walletId" : ""
-         }`
-      ).get(params) as { c: number }).c;
+           AND o.kind IN ('MAKER_BID','MAKER_ASK') ${walletId != null ? "AND o.wallet_id = @walletId" : ""}`
+          )
+          .get(params) as { c: number }
+      ).c;
       return makerOrders > 0 ? makerFills / makerOrders : 0;
     } catch {
       return null;
@@ -1067,7 +1066,8 @@ const computeMakerMetrics = (
   let makerVolume24h = cachedMetrics?.maker_volume_24h ?? 0;
   let feeEquivalent24h = cachedMetrics?.fee_equivalent_24h ?? 0;
   let rebateUpperBound24h = cachedMetrics?.rebate_upper_bound_24h ?? 0;
-  let rebatePoolPctEffective = cachedMetrics?.rebate_pool_pct ?? (feeEquivalent24h > 0 ? rebateUpperBound24h / feeEquivalent24h : 0);
+  let rebatePoolPctEffective =
+    cachedMetrics?.rebate_pool_pct ?? (feeEquivalent24h > 0 ? rebateUpperBound24h / feeEquivalent24h : 0);
 
   if (!cachedMetrics) {
     const volumeRow = sqlite
@@ -1081,9 +1081,7 @@ const computeMakerMetrics = (
            AND o.kind IN ('MAKER_BID','MAKER_ASK')
            ${walletId != null ? "AND o.wallet_id = @walletId" : ""}`
       )
-      .get(walletId != null ? { since: since24h, walletId } : { since: since24h }) as
-      | { volume: number }
-      | undefined;
+      .get(walletId != null ? { since: since24h, walletId } : { since: since24h }) as { volume: number } | undefined;
 
     makerVolume24h = volumeRow?.volume ?? 0;
 
@@ -1214,7 +1212,10 @@ const computeTimeOutsideBand = (
          JOIN wallets w ON w.id = o.wallet_id
          WHERE o.kind IN ('MAKER_BID','MAKER_ASK') AND o.ts >= @since ${idClause}`
       )
-      .all(walletId != null ? { since, walletId } : { since }) as Array<{ outside_band: number | null; total: number | null }>;
+      .all(walletId != null ? { since, walletId } : { since }) as Array<{
+      outside_band: number | null;
+      total: number | null;
+    }>;
     const row = rows[0];
     const outsideBandCount = Number(row?.outside_band ?? 0) || 0;
     const totalCount = Number(row?.total ?? 0) || 0;
@@ -1225,10 +1226,7 @@ const computeTimeOutsideBand = (
   }
 };
 
-const computeSkipBreakdown = (
-  sqlite: ReturnType<typeof getDb>["sqlite"],
-  walletId: number | null
-): SkipBreakdown => {
+const computeSkipBreakdown = (sqlite: ReturnType<typeof getDb>["sqlite"], walletId: number | null): SkipBreakdown => {
   const windowHours = 24;
   const since = Date.now() - windowHours * 60 * 60 * 1000;
   const out: SkipBreakdown = { inventory_build: 0, net_edge_le_0: 0 };
@@ -1246,7 +1244,10 @@ const computeSkipBreakdown = (
          WHERE (@walletId IS NULL OR walletId = @walletId)
          GROUP BY decision_reason`
       )
-      .all({ since, walletId: walletId ?? null }) as Array<{ decision_reason: string | null; cnt: number }>;
+      .all({ since, walletId: walletId ?? null }) as Array<{
+      decision_reason: string | null;
+      cnt: number;
+    }>;
     for (const r of rows) {
       const key = r.decision_reason ?? "unknown";
       out[key] = (out[key] ?? 0) + r.cnt;
@@ -1277,29 +1278,22 @@ const toAgeSec = (now: number, ts: number | null): number | null => {
   return Math.max(0, Math.floor((now - (ts as number)) / 1000));
 };
 
-const tableExists = (
-  sqlite: ReturnType<typeof getDb>["sqlite"],
-  tableName: string
-): boolean => {
+const tableExists = (sqlite: ReturnType<typeof getDb>["sqlite"], tableName: string): boolean => {
   try {
-    const row = sqlite
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
-      .get(tableName) as { name?: string } | undefined;
+    const row = sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(tableName) as
+      | { name?: string }
+      | undefined;
     return Boolean(row?.name);
   } catch {
     return false;
   }
 };
 
-const columnExists = (
-  sqlite: ReturnType<typeof getDb>["sqlite"],
-  tableName: string,
-  columnName: string
-): boolean => {
+const columnExists = (sqlite: ReturnType<typeof getDb>["sqlite"], tableName: string, columnName: string): boolean => {
   try {
-    const rows = sqlite
-      .prepare(`PRAGMA table_info(${tableName})`)
-      .all() as Array<{ name?: string }>;
+    const rows = sqlite.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{
+      name?: string;
+    }>;
     return rows.some((r) => r.name === columnName);
   } catch {
     return false;
@@ -1314,23 +1308,16 @@ const classifyLaneHealth = (args: {
   activeSec: number;
   health: Omit<LaneRuntimeHealth, "status" | "reason">;
 }): LaneRuntimeHealth => {
-  const {
-    lane,
-    feedFreshnessSec,
-    expectActivity,
-    stallSec,
-    activeSec,
-    health
-  } = args;
+  const { lane, feedFreshnessSec, expectActivity, stallSec, activeSec, health } = args;
 
   const hasAnyData = Boolean(
     health.lastOrderTs != null ||
-      health.lastOrderTouchTs != null ||
-      health.lastRealFillTs != null ||
-      health.lastSkipTs != null ||
-      health.orders30m > 0 ||
-      health.realFills30m > 0 ||
-      health.skips30m > 0
+    health.lastOrderTouchTs != null ||
+    health.lastRealFillTs != null ||
+    health.lastSkipTs != null ||
+    health.orders30m > 0 ||
+    health.realFills30m > 0 ||
+    health.skips30m > 0
   );
   const recentActivity = health.orders5m + health.realFills5m + health.skips5m;
 
@@ -1449,9 +1436,7 @@ const computeRuntimeHealth = (
     }
   })();
 
-  const scopedSkips = walletId == null
-    ? recentSkips
-    : recentSkips.filter((row) => Number(row.walletId) === walletId);
+  const scopedSkips = walletId == null ? recentSkips : recentSkips.filter((row) => Number(row.walletId) === walletId);
 
   const countSkipsSince = (kinds: string[], since: number): number => {
     if (!Number.isFinite(since) || scopedSkips.length === 0) return 0;
@@ -1535,9 +1520,9 @@ const computeRuntimeHealth = (
 
   const latestFeatureTs = (() => {
     try {
-      const row = sqlite
-        .prepare("SELECT MAX(ts) as ts FROM latest_features")
-        .get() as { ts: number | null } | undefined;
+      const row = sqlite.prepare("SELECT MAX(ts) as ts FROM latest_features").get() as
+        | { ts: number | null }
+        | undefined;
       return row?.ts ?? null;
     } catch {
       return null;
@@ -1557,9 +1542,7 @@ const computeRuntimeHealth = (
              AND d.kind IN ('TAKER_BUY', 'TAKER_SELL')
              ${decisionWalletClause}`
         )
-        .get(walletId != null ? { since: since5m, walletId } : { since: since5m }) as
-        | { c: number }
-        | undefined;
+        .get(walletId != null ? { since: since5m, walletId } : { since: since5m }) as { c: number } | undefined;
       return Number(row?.c ?? 0) || 0;
     } catch {
       return 0;
@@ -1569,9 +1552,9 @@ const computeRuntimeHealth = (
   const shadowSummaryUpdatedTs = (() => {
     try {
       if (!tableExists(sqlite, "shadow_summary_latest")) return null;
-      const row = sqlite
-        .prepare("SELECT updated_ts as ts FROM shadow_summary_latest WHERE id = 1")
-        .get() as { ts: number | null } | undefined;
+      const row = sqlite.prepare("SELECT updated_ts as ts FROM shadow_summary_latest WHERE id = 1").get() as
+        | { ts: number | null }
+        | undefined;
       return row?.ts ?? null;
     } catch {
       return null;
@@ -1605,12 +1588,7 @@ const computeRuntimeHealth = (
         const makerLastOrderTouchTs = maxOrderTouchTs(makerKinds);
         const makerLastRealFillTs = maxRealFillTs(makerKinds);
         const makerLastSkipTs = maxSkipTs(makerKinds);
-        const makerHeartbeatTs = maxTs(
-          makerLastOrderTouchTs,
-          makerLastSkipTs,
-          makerLastOrderTs,
-          makerLastRealFillTs
-        );
+        const makerHeartbeatTs = maxTs(makerLastOrderTouchTs, makerLastSkipTs, makerLastOrderTs, makerLastRealFillTs);
         const makerBase: Omit<LaneRuntimeHealth, "status" | "reason"> = {
           heartbeatTs: makerHeartbeatTs,
           lastOrderTs: makerLastOrderTs,
@@ -1644,12 +1622,7 @@ const computeRuntimeHealth = (
         const takerLastOrderTouchTs = maxOrderTouchTs(takerKinds);
         const takerLastRealFillTs = maxRealFillTs(takerKinds);
         const takerLastSkipTs = maxSkipTs(takerKinds);
-        const takerHeartbeatTs = maxTs(
-          takerLastOrderTouchTs,
-          takerLastSkipTs,
-          takerLastOrderTs,
-          takerLastRealFillTs
-        );
+        const takerHeartbeatTs = maxTs(takerLastOrderTouchTs, takerLastSkipTs, takerLastOrderTs, takerLastRealFillTs);
         const takerBase: Omit<LaneRuntimeHealth, "status" | "reason"> = {
           heartbeatTs: takerHeartbeatTs,
           lastOrderTs: takerLastOrderTs,
@@ -1669,9 +1642,7 @@ const computeRuntimeHealth = (
         return classifyLaneHealth({
           lane: "taker",
           feedFreshnessSec,
-          expectActivity:
-            (feedFreshnessSec == null || feedFreshnessSec <= FEED_STALE_SEC) &&
-            signals5m > 0,
+          expectActivity: (feedFreshnessSec == null || feedFreshnessSec <= FEED_STALE_SEC) && signals5m > 0,
           stallSec: TAKER_STALL_WITH_SIGNALS_SEC,
           activeSec: TAKER_ACTIVE_SEC,
           health: takerBase

@@ -21,6 +21,8 @@ export type CostBreakdown = {
   spreadBps: number;
   feeBps: number;
   feeUsdc: number;
+  /** Expected economic value of the fee; differs from quote-price cash equivalent for a BUY share fee. */
+  feeEconomicValueUsdc?: number;
   feePerShare: number;
   notionalUsdc: number;
   marketProfile: string;

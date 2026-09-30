@@ -32,6 +32,7 @@ Purpose: fast onboarding for contributors and coding agents working in this repo
 - Run one app: `npm run dev --workspace apps/worker` or `npm run dev --workspace apps/web`.
 - Dev process behavior: root `dev` uses `concurrently --kill-others-on-fail` (other process is terminated only when one exits non-zero/failure).
 - Tests: `npm test`, `npm run test:unit`, `npm run test:integration`, `npm run test:validation`, `npm run e2e`.
+- Mathematical assurance: `pnpm math:assurance` (hand fixtures, Python 3.11 Decimal differential oracle, fixed-seed properties). Read `docs/math_assurance.md` before changing economics or claiming fee-adjusted P&L.
 - Typecheck/lint/format: `npm run typecheck`, `npm run lint`, `npm run format`.
 - Doctor (full): `npx tsx scripts/doctor.ts --db ./data/dev.db --hours 24 --horizonMs 600000 --strict`.
 - Doctor (quick): `npx tsx scripts/archive/manual-diagnostics/doctor-quick.ts --db ./data/dev.db --hours 24 --horizonMs 600000`.
@@ -85,6 +86,10 @@ Purpose: fast onboarding for contributors and coding agents working in this repo
   - maker side quote toggles are no longer configurable in `worker.json`; maker loop defaults to two-sided quoting and side suppression is handled by EV/regime gates.
   - taker toxicity/adaptive-side gates are default-on internal controls in `TakerLoop`; risk-close still runs under existing hard precedence.
 - Execution is currently hard-wired to `PAPER` in `apps/worker/src/config.ts`; environment credentials and `EXECUTION_MODE` do not enable live routing.
+- In production the dashboard and APIs return 503 without both Basic-auth credentials. This is single-instance protection, not multi-tenant customer isolation.
+- Current fee defaults are a dated paper scenario, not verified historical rules. Explicit zero differs from missing token fee metadata; unknown profiles and historical as-of pricing without a matching bounded schedule fail closed.
+- BUY share-fee EV uses expected per-share value at the same prediction target as gross edge. New taker SELL orders need held shares; an uncollateralized short is not executable.
+- Gross shadow-position P&L is not a fee/share-reconciled net result. Do not use legacy `netPnl` displays as promotion proof; see `docs/math_assurance.md`.
 - Live CLOB adapters remain dormant for research parity. Re-enabling them requires an explicit, separately reviewed architecture and safety change.
 - Order lifecycle is explicit and monotonic for execution rows:
   - Canonical status set: `PENDING | OPEN | PARTIAL | FILLED | CANCELLED | REJECTED`.
@@ -150,4 +155,4 @@ Update this file when any of the following change:
 - New operational loops or data flows are added.
 - UI branding system or shared design tokens change.
 
-Last updated: 2026-08-23
+Last updated: 2026-09-30

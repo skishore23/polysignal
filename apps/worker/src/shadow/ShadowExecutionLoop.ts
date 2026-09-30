@@ -115,9 +115,7 @@ export class ShadowExecutionLoop {
   constructor(config: ShadowConfig, deps: ShadowDeps) {
     this.config = {
       ...config,
-      markoutHorizonsMs: config.markoutHorizonsMs?.length
-        ? config.markoutHorizonsMs
-        : DEFAULT_MARKOUT_HORIZONS_MS,
+      markoutHorizonsMs: config.markoutHorizonsMs?.length ? config.markoutHorizonsMs : DEFAULT_MARKOUT_HORIZONS_MS,
       makerQueueFillProb: Number.isFinite(config.makerQueueFillProb) ? config.makerQueueFillProb : 1,
       makerPriceToleranceBps: Number.isFinite(config.makerPriceToleranceBps) ? config.makerPriceToleranceBps : 0,
       forceSyntheticFills: config.forceSyntheticFills ?? true,
@@ -128,10 +126,9 @@ export class ShadowExecutionLoop {
       rebalanceTargetFraction: config.rebalanceTargetFraction ?? 0.2,
       summaryRefreshIntervalMs: config.summaryRefreshIntervalMs ?? 15_000,
       makerMetricsRefreshIntervalMs: config.makerMetricsRefreshIntervalMs ?? 120_000,
-      makerMetricsFillLimit:
-        Number.isFinite(config.makerMetricsFillLimit)
-          ? Math.max(1000, Math.floor(config.makerMetricsFillLimit as number))
-          : 20_000
+      makerMetricsFillLimit: Number.isFinite(config.makerMetricsFillLimit)
+        ? Math.max(1000, Math.floor(config.makerMetricsFillLimit as number))
+        : 20_000
     };
     this.deps = deps;
 
@@ -436,7 +433,7 @@ export class ShadowExecutionLoop {
     const prevFilledPrice = Number.isFinite(row.filledPrice) ? (row.filledPrice as number) : null;
     const nextFilledPrice =
       prevFilledPrice != null && prevFilled > FILL_EPS
-        ? ((prevFilledPrice * prevFilled) + (args.price * acceptedSize)) / nextFilledSize
+        ? (prevFilledPrice * prevFilled + args.price * acceptedSize) / nextFilledSize
         : args.price;
     const desiredStatus = this.resolveNextStatus(currentStatus, nextFilledSize, totalSize);
     if (!canTransitionOrderStatus(currentStatus, desiredStatus)) {
@@ -534,14 +531,18 @@ export class ShadowExecutionLoop {
 
         const isBid = order.kind === "MAKER_BID";
         const tol = (this.config.makerPriceToleranceBps / 10000) * order.price;
-        const priceCross = isBid
-          ? parsed.price <= order.price + tol
-          : parsed.price >= order.price - tol;
+        const priceCross = isBid ? parsed.price <= order.price + tol : parsed.price >= order.price - tol;
         const sideOk = isBid ? parsed.side === "SELL" : parsed.side === "BUY";
         if (!priceCross || !sideOk) continue;
 
         if (this.config.makerQueueFillProb < 1) {
-          const roll = deterministicUnitSample("trade_match", trade.globalSeq, order.id, order.price ?? 0, order.size ?? 0);
+          const roll = deterministicUnitSample(
+            "trade_match",
+            trade.globalSeq,
+            order.id,
+            order.price ?? 0,
+            order.size ?? 0
+          );
           if (roll > this.config.makerQueueFillProb) continue;
         }
 
@@ -597,13 +598,7 @@ export class ShadowExecutionLoop {
       if (!crossed) continue;
 
       if (this.config.makerQueueFillProb < 1) {
-        const roll = deterministicUnitSample(
-          "book_cross",
-          row.id,
-          row.tokenId,
-          row.featureTs ?? now,
-          row.price
-        );
+        const roll = deterministicUnitSample("book_cross", row.id, row.tokenId, row.featureTs ?? now, row.price);
         if (roll > this.config.makerQueueFillProb) continue;
       }
 
@@ -645,14 +640,16 @@ export class ShadowExecutionLoop {
       if (roll > this.config.makerQueueFillProb) return;
     }
 
-    if (this.appendFill({
-      ts: now,
-      orderId: order.id,
-      price: order.price,
-      size: order.size,
-      method: "synthetic_fill",
-      note: "Shadow synthetic fill"
-    })) {
+    if (
+      this.appendFill({
+        ts: now,
+        orderId: order.id,
+        price: order.price,
+        size: order.size,
+        method: "synthetic_fill",
+        note: "Shadow synthetic fill"
+      })
+    ) {
       this.lastSyntheticFillTs = now;
     }
   }
@@ -710,7 +707,9 @@ export class ShadowExecutionLoop {
       const rebalanceSize = absDelta - desiredAbs;
       if (rebalanceSize <= 0) continue;
 
-      const midRow = this.selectLatestMidStmt.get(posRow.tokenId) as { mid: number | null; marketId: string | null } | undefined;
+      const midRow = this.selectLatestMidStmt.get(posRow.tokenId) as
+        | { mid: number | null; marketId: string | null }
+        | undefined;
       const mid = midRow?.mid ?? null;
       if (!Number.isFinite(mid) || !mid || mid <= 0) continue;
 
@@ -785,9 +784,7 @@ export class ShadowExecutionLoop {
         const midAfterRow = this.selectMidAfterStmt.get(fill.tokenId, targetTs) as { mid: number } | undefined;
         const midAtHorizonRaw = midAfterRow?.mid ?? null;
         const midAtHorizon =
-          midAtHorizonRaw != null && Number.isFinite(midAtHorizonRaw) && midAtHorizonRaw > 0
-            ? midAtHorizonRaw
-            : null;
+          midAtHorizonRaw != null && Number.isFinite(midAtHorizonRaw) && midAtHorizonRaw > 0 ? midAtHorizonRaw : null;
 
         const canComputeMarkout =
           midAtFill != null &&
@@ -796,9 +793,8 @@ export class ShadowExecutionLoop {
           Number.isFinite(midAtHorizon) &&
           midAtFill > 0;
         const markoutBps = canComputeMarkout
-          ? (fill.side === "BUY"
-              ? (midAtHorizon - midAtFill) / midAtFill
-              : (midAtFill - midAtHorizon) / midAtFill) * 10000
+          ? (fill.side === "BUY" ? (midAtHorizon - midAtFill) / midAtFill : (midAtFill - midAtHorizon) / midAtFill) *
+            10000
           : null;
 
         this.insertMarkoutStmt.run({
@@ -830,7 +826,10 @@ export class ShadowExecutionLoop {
     this.refreshMakerMetricsCache(windowHours);
   }
 
-  private computeShadowSummary(since: number, windowHours: number): {
+  private computeShadowSummary(
+    since: number,
+    windowHours: number
+  ): {
     updatedTs: number;
     windowHours: number;
     makerOrders: number;
@@ -850,87 +849,135 @@ export class ShadowExecutionLoop {
   } {
     const sqlite = this.deps.sqlite;
 
-    const makerOrders = (sqlite.prepare(
-      `SELECT COUNT(*) as c FROM shadow_orders
+    const makerOrders = (
+      sqlite
+        .prepare(
+          `SELECT COUNT(*) as c FROM shadow_orders
        WHERE ts >= ? AND kind IN ('MAKER_BID','MAKER_ASK') AND execution_mode = 'SHADOW'`
-    ).get(since) as { c: number }).c;
+        )
+        .get(since) as { c: number }
+    ).c;
 
-    const makerFillsRow = sqlite.prepare(`
+    const makerFillsRow = sqlite
+      .prepare(
+        `
       SELECT 
         COUNT(*) as total,
         COALESCE(SUM(CASE WHEN f.method != 'synthetic_fill' THEN 1 ELSE 0 END), 0) as real_fills
       FROM shadow_fills f
       JOIN shadow_orders o ON o.id = f.order_id
       WHERE f.ts >= ? AND o.kind IN ('MAKER_BID','MAKER_ASK') AND o.execution_mode = 'SHADOW'
-    `).get(since) as { total: number; real_fills: number };
+    `
+      )
+      .get(since) as { total: number; real_fills: number };
 
     const makerFills = makerFillsRow.total ?? 0;
     const makerRealFills = makerFillsRow.real_fills ?? 0;
     const makerSyntheticFills = Math.max(0, makerFills - makerRealFills);
 
-    const takerOrders = (sqlite.prepare(
-      `SELECT COUNT(*) as c FROM shadow_orders
+    const takerOrders = (
+      sqlite
+        .prepare(
+          `SELECT COUNT(*) as c FROM shadow_orders
        WHERE ts >= ? AND kind IN ('TAKER_BUY','TAKER_SELL') AND execution_mode = 'SHADOW'`
-    ).get(since) as { c: number }).c;
+        )
+        .get(since) as { c: number }
+    ).c;
 
-    const takerFillsRow = sqlite.prepare(`
+    const takerFillsRow = sqlite
+      .prepare(
+        `
       SELECT 
         COUNT(*) as total,
         COALESCE(SUM(CASE WHEN f.method != 'synthetic_fill' THEN 1 ELSE 0 END), 0) as real_fills
       FROM shadow_fills f
       JOIN shadow_orders o ON o.id = f.order_id
       WHERE f.ts >= ? AND o.kind IN ('TAKER_BUY','TAKER_SELL') AND o.execution_mode = 'SHADOW'
-    `).get(since) as { total: number; real_fills: number };
+    `
+      )
+      .get(since) as { total: number; real_fills: number };
 
     const takerFills = takerFillsRow.total ?? 0;
     const takerRealFills = takerFillsRow.real_fills ?? 0;
     const takerSyntheticFills = Math.max(0, takerFills - takerRealFills);
 
-    const makerMarkout5s = (sqlite.prepare(`
+    const makerMarkout5s = (
+      sqlite
+        .prepare(
+          `
       SELECT AVG(m.markout_bps) as avg_bps
       FROM shadow_markouts m
       JOIN shadow_fills f ON f.id = m.fill_id
       JOIN shadow_orders o ON o.id = f.order_id
       WHERE m.horizon_ms = 5000 AND m.ts >= ? AND o.kind IN ('MAKER_BID','MAKER_ASK')
         AND o.execution_mode = 'SHADOW'
-    `).get(since) as { avg_bps: number | null }).avg_bps;
+    `
+        )
+        .get(since) as { avg_bps: number | null }
+    ).avg_bps;
 
-    const makerMarkout30s = (sqlite.prepare(`
+    const makerMarkout30s = (
+      sqlite
+        .prepare(
+          `
       SELECT AVG(m.markout_bps) as avg_bps
       FROM shadow_markouts m
       JOIN shadow_fills f ON f.id = m.fill_id
       JOIN shadow_orders o ON o.id = f.order_id
       WHERE m.horizon_ms = 30000 AND m.ts >= ? AND o.kind IN ('MAKER_BID','MAKER_ASK')
         AND o.execution_mode = 'SHADOW'
-    `).get(since) as { avg_bps: number | null }).avg_bps;
+    `
+        )
+        .get(since) as { avg_bps: number | null }
+    ).avg_bps;
 
-    const takerMarkout5s = (sqlite.prepare(`
+    const takerMarkout5s = (
+      sqlite
+        .prepare(
+          `
       SELECT AVG(m.markout_bps) as avg_bps
       FROM shadow_markouts m
       JOIN shadow_fills f ON f.id = m.fill_id
       JOIN shadow_orders o ON o.id = f.order_id
       WHERE m.horizon_ms = 5000 AND m.ts >= ? AND o.kind IN ('TAKER_BUY','TAKER_SELL')
         AND o.execution_mode = 'SHADOW'
-    `).get(since) as { avg_bps: number | null }).avg_bps;
+    `
+        )
+        .get(since) as { avg_bps: number | null }
+    ).avg_bps;
 
-    const takerMarkout30s = (sqlite.prepare(`
+    const takerMarkout30s = (
+      sqlite
+        .prepare(
+          `
       SELECT AVG(m.markout_bps) as avg_bps
       FROM shadow_markouts m
       JOIN shadow_fills f ON f.id = m.fill_id
       JOIN shadow_orders o ON o.id = f.order_id
       WHERE m.horizon_ms = 30000 AND m.ts >= ? AND o.kind IN ('TAKER_BUY','TAKER_SELL')
         AND o.execution_mode = 'SHADOW'
-    `).get(since) as { avg_bps: number | null }).avg_bps;
+    `
+        )
+        .get(since) as { avg_bps: number | null }
+    ).avg_bps;
 
-    const makerLastTs = (sqlite.prepare(
-      `SELECT MAX(ts) as ts FROM shadow_orders
+    const makerLastTs = (
+      sqlite
+        .prepare(
+          `SELECT MAX(ts) as ts FROM shadow_orders
        WHERE kind IN ('MAKER_BID','MAKER_ASK') AND execution_mode = 'SHADOW'`
-    ).get() as { ts: number | null }).ts;
+        )
+        .get() as { ts: number | null }
+    ).ts;
 
-    const takerLastTs = (sqlite.prepare(
-      `SELECT MAX(ts) as ts FROM shadow_orders
+    const takerLastTs = (
+      sqlite
+        .prepare(
+          `SELECT MAX(ts) as ts FROM shadow_orders
        WHERE kind IN ('TAKER_BUY','TAKER_SELL') AND execution_mode = 'SHADOW'`
-    ).get() as { ts: number | null }).ts;
+        )
+        .get() as { ts: number | null }
+    ).ts;
 
     return {
       updatedTs: Date.now(),
@@ -956,11 +1003,7 @@ export class ShadowExecutionLoop {
     try {
       const raw = JSON.parse(payloadJson) as Record<string, unknown>;
       const tsRaw = typeof raw.timestamp === "number" ? raw.timestamp : undefined;
-      const tsMs = tsRaw != null
-        ? tsRaw < 1_000_000_000_000
-          ? tsRaw * 1000
-          : tsRaw
-        : undefined;
+      const tsMs = tsRaw != null ? (tsRaw < 1_000_000_000_000 ? tsRaw * 1000 : tsRaw) : undefined;
       return {
         price: typeof raw.price === "number" ? raw.price : Number(raw.price ?? NaN),
         size: typeof raw.size === "number" ? raw.size : Number(raw.size ?? NaN),
@@ -984,8 +1027,7 @@ export class ShadowExecutionLoop {
     const sameDirection = (state.position > 0 && delta > 0) || (state.position < 0 && delta < 0);
     if (sameDirection) {
       const totalSize = Math.abs(state.position) + Math.abs(delta);
-      const weightedAvg =
-        (Math.abs(state.position) * state.avgEntry + Math.abs(delta) * fill.price) / totalSize;
+      const weightedAvg = (Math.abs(state.position) * state.avgEntry + Math.abs(delta) * fill.price) / totalSize;
       return { ...state, position: nextPos, avgEntry: weightedAvg };
     }
 
@@ -1020,8 +1062,9 @@ export class ShadowExecutionLoop {
     const since = now - windowHours * 60 * 60 * 1000;
     const fillLimit = this.config.makerMetricsFillLimit ?? 20_000;
 
-    const fillsDesc = sqlite.prepare(
-      `SELECT
+    const fillsDesc = sqlite
+      .prepare(
+        `SELECT
          o.wallet_id as walletId,
          o.token_id as tokenId,
          o.side as side,
@@ -1044,7 +1087,8 @@ export class ShadowExecutionLoop {
          AND f.ts >= @since
        ORDER BY f.ts DESC, f.id DESC
        LIMIT @limit`
-    ).all({ since, limit: fillLimit }) as MakerFillRow[];
+      )
+      .all({ since, limit: fillLimit }) as MakerFillRow[];
     const fills = fillsDesc.reverse();
 
     const states = new Map<string, MakerState>();
@@ -1073,7 +1117,7 @@ export class ShadowExecutionLoop {
           price: fill.price,
           feeRateBps: fill.feeRateBps
         });
-        if (Number.isFinite(feeEquivalent) && feeEquivalent > 0) {
+        if (feeEquivalent != null && Number.isFinite(feeEquivalent) && feeEquivalent > 0) {
           feeEq24hByWallet.set(walletId, (feeEq24hByWallet.get(walletId) ?? 0) + feeEquivalent);
           const rebatePoolPct = getMakerRebatePoolPct(marketProfile);
           if (rebatePoolPct > 0) {
@@ -1086,14 +1130,13 @@ export class ShadowExecutionLoop {
       }
 
       const key = `${walletId}:${fill.tokenId}`;
-      const state =
-        states.get(key) ?? {
-          walletId,
-          tokenId: fill.tokenId,
-          position: 0,
-          avgEntry: 0,
-          realized: 0
-        };
+      const state = states.get(key) ?? {
+        walletId,
+        tokenId: fill.tokenId,
+        position: 0,
+        avgEntry: 0,
+        realized: 0
+      };
       states.set(key, this.applyShadowFill(state, fill));
     }
 
@@ -1115,13 +1158,16 @@ export class ShadowExecutionLoop {
       }
     }
 
-    const metricsByWallet = new Map<number, {
-      openPositions: number;
-      totalRealized: number;
-      totalUnrealized: number;
-      longExposure: number;
-      shortExposure: number;
-    }>();
+    const metricsByWallet = new Map<
+      number,
+      {
+        openPositions: number;
+        totalRealized: number;
+        totalUnrealized: number;
+        longExposure: number;
+        shortExposure: number;
+      }
+    >();
 
     for (const state of states.values()) {
       const metrics = metricsByWallet.get(state.walletId) ?? {
@@ -1150,16 +1196,21 @@ export class ShadowExecutionLoop {
       metricsByWallet.set(state.walletId, metrics);
     }
 
-    const walletRows = sqlite.prepare("SELECT id as walletId FROM wallets").all() as Array<{ walletId: number }>;
+    const walletRows = sqlite.prepare("SELECT id as walletId FROM wallets").all() as Array<{
+      walletId: number;
+    }>;
     const allWalletIds = walletRows.map((w) => w.walletId);
 
-    const upsertRow = (walletId: number, metrics?: {
-      openPositions: number;
-      totalRealized: number;
-      totalUnrealized: number;
-      longExposure: number;
-      shortExposure: number;
-    }) => {
+    const upsertRow = (
+      walletId: number,
+      metrics?: {
+        openPositions: number;
+        totalRealized: number;
+        totalUnrealized: number;
+        longExposure: number;
+        shortExposure: number;
+      }
+    ) => {
       const fillCount = fillCountByWallet.get(walletId) ?? 0;
       const makerVolume24h = volume24hByWallet.get(walletId) ?? 0;
       const feeEquivalent24h = feeEq24hByWallet.get(walletId) ?? 0;

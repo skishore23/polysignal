@@ -10,11 +10,7 @@ import {
 import { BeliefEngine, type BeliefContext } from "../belief";
 import { applyCostToEdge, computeCostBreakdown } from "../trading/CostModel";
 import { validateEdgeCostSanity } from "../trading/EdgeSanity";
-import {
-  classifyMarketProfile,
-  isShadowOnlyProfile,
-  type MarketScope
-} from "../trading/MarketProfile";
+import { classifyMarketProfile, isShadowOnlyProfile, type MarketScope } from "../trading/MarketProfile";
 import { decideMarketProfileScope } from "../trading/DecisionEngine";
 import {
   compileWalletMarketGate,
@@ -116,16 +112,12 @@ type TakerSideMarkoutStats = {
 
 const toDecisionGroupId = (): string => `taker:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
 
-const toKind = (side: "BUY" | "SELL"): "TAKER_BUY" | "TAKER_SELL" =>
-  side === "BUY" ? "TAKER_BUY" : "TAKER_SELL";
+const toKind = (side: "BUY" | "SELL"): "TAKER_BUY" | "TAKER_SELL" => (side === "BUY" ? "TAKER_BUY" : "TAKER_SELL");
 
 const finiteOr = (value: number | null | undefined, fallback: number): number =>
   Number.isFinite(value) ? (value as number) : fallback;
 
-const walletAllowsTakerSide = (
-  takerSide: "BUY" | "SELL" | "BOTH" | "NONE",
-  side: "BUY" | "SELL"
-): boolean => {
+const walletAllowsTakerSide = (takerSide: "BUY" | "SELL" | "BOTH" | "NONE", side: "BUY" | "SELL"): boolean => {
   if (takerSide === "NONE") return false;
   if (takerSide === "BOTH") return true;
   return takerSide === side;
@@ -317,10 +309,12 @@ export class TakerLoop {
        VALUES (@ts, @tokenId, @walletId, @kind, @strategyLane, @decisionGroupId, @decision, @decisionReason, @predEdgeBps, @costBps, @netEdgeBps,
                @spreadBps, @feesBps, @expectedSlippageBps, @midPx, @spreadPx, @deltaHat, @size, @bidPx, @askPx, @bidDepth, @askDepth)`
     );
-    this.insertSubmitOrderAndDecisionTx = deps.sqlite.transaction((orderRow: Record<string, unknown>, decisionRow: Record<string, unknown>) => {
-      this.insertShadowOrderStmt.run(orderRow);
-      this.insertDecisionLogStmt.run(decisionRow);
-    });
+    this.insertSubmitOrderAndDecisionTx = deps.sqlite.transaction(
+      (orderRow: Record<string, unknown>, decisionRow: Record<string, unknown>) => {
+        this.insertShadowOrderStmt.run(orderRow);
+        this.insertDecisionLogStmt.run(decisionRow);
+      }
+    );
 
     this.scheduler = new TaskScheduler(() => this.tick(), {
       name: "TakerLoop",
@@ -362,12 +356,7 @@ export class TakerLoop {
     const buyStats: TakerSideMarkoutStats = { fills: 0, avgMarkoutBps: null };
     const sellStats: TakerSideMarkoutStats = { fills: 0, avgMarkoutBps: null };
     for (const row of rows) {
-      const stats =
-        row.kind === "TAKER_BUY"
-          ? buyStats
-          : row.kind === "TAKER_SELL"
-            ? sellStats
-            : null;
+      const stats = row.kind === "TAKER_BUY" ? buyStats : row.kind === "TAKER_SELL" ? sellStats : null;
       if (!stats) continue;
       stats.fills = finiteOr(row.fills, 0);
       stats.avgMarkoutBps = Number.isFinite(row.avgMarkoutBps) ? (row.avgMarkoutBps as number) : null;
@@ -476,18 +465,23 @@ export class TakerLoop {
       const prior = await this.deps.belief.estimate(beliefContext);
       if (!prior) continue;
       const pHat = prior.probability;
+      if (!Number.isFinite(pHat) || pHat < 0 || pHat > 1) continue;
 
       const predEdgeBuyBps = ((pHat - ask) / mid) * 10_000;
-      const buySizeEstimate = Math.max(1, Math.min(this.config.baseOrderSize, this.config.maxNotionalPerOrderUsd / ask));
+      const buySizeEstimate = Math.max(
+        1,
+        Math.min(this.config.baseOrderSize, this.config.maxNotionalPerOrderUsd / ask)
+      );
       const costBuy = computeCostBreakdown({
         role: "TAKER",
         side: "BUY",
+        expectedValuePerShare: pHat,
         midPx: mid,
         quotePx: ask,
         spreadPx: spread,
         sizeShares: buySizeEstimate,
         marketProfile,
-        feeRateBps: finiteOr(candidate.feeRateBps, 0),
+        feeRateBps: candidate.feeRateBps,
         slippageBps: this.config.slippageBps,
         adverseSelectionBps: this.config.adverseSelectionBps,
         queueLossBps: this.config.queueLossBps,
@@ -497,7 +491,10 @@ export class TakerLoop {
       const netBuyBps = applyCostToEdge(predEdgeBuyBps, costBuy);
 
       const predEdgeSellBps = ((bid - pHat) / mid) * 10_000;
-      const sellSizeEstimate = Math.max(1, Math.min(this.config.baseOrderSize, this.config.maxNotionalPerOrderUsd / bid));
+      const sellSizeEstimate = Math.max(
+        1,
+        Math.min(this.config.baseOrderSize, this.config.maxNotionalPerOrderUsd / bid)
+      );
       const costSell = computeCostBreakdown({
         role: "TAKER",
         side: "SELL",
@@ -506,7 +503,7 @@ export class TakerLoop {
         spreadPx: spread,
         sizeShares: sellSizeEstimate,
         marketProfile,
-        feeRateBps: finiteOr(candidate.feeRateBps, 0),
+        feeRateBps: candidate.feeRateBps,
         slippageBps: this.config.slippageBps,
         adverseSelectionBps: this.config.adverseSelectionBps,
         queueLossBps: this.config.queueLossBps,
@@ -614,53 +611,59 @@ export class TakerLoop {
         const capSize = this.config.maxNotionalPerOrderUsd / quotePx;
         const size = Math.max(1, Math.min(scaledSize, capSize));
         const nextPos = side === "BUY" ? currentPos + size : currentPos - size;
+        // A SELL of this token needs held shares. Paper short exposure is not
+        // evidence that an uncollateralized venue SELL can be executed.
+        if (side === "SELL" && currentPos + 1e-12 < size) continue;
         if (nextPos > this.config.maxLongPerToken || nextPos < -this.config.maxShortPerToken) {
           continue;
         }
 
         const expectedCancelTs = ts + this.config.orderTtlMs;
-        const liveCost = side === "BUY"
-          ? computeCostBreakdown({
-              role: "TAKER",
-              side: "BUY",
-              midPx: mid,
-              quotePx: ask,
-              spreadPx: spread,
-              sizeShares: size,
-              marketProfile,
-              feeRateBps: finiteOr(candidate.feeRateBps, 0),
-              slippageBps: this.config.slippageBps,
-              adverseSelectionBps: this.config.adverseSelectionBps,
-              queueLossBps: this.config.queueLossBps,
-              rebateBps: 0,
-              inventoryPenaltyBps: this.config.inventoryPenaltyBps
-            })
-          : computeCostBreakdown({
-              role: "TAKER",
-              side: "SELL",
-              midPx: mid,
-              quotePx: bid,
-              spreadPx: spread,
-              sizeShares: size,
-              marketProfile,
-              feeRateBps: finiteOr(candidate.feeRateBps, 0),
-              slippageBps: this.config.slippageBps,
-              adverseSelectionBps: this.config.adverseSelectionBps,
-              queueLossBps: this.config.queueLossBps,
-              rebateBps: 0,
-              inventoryPenaltyBps: this.config.inventoryPenaltyBps
-            });
-        const trace = side === "BUY"
-          ? {
-              predEdgeBps: predEdgeBuyBps,
-              netEdgeBps: applyCostToEdge(predEdgeBuyBps, liveCost),
-              cost: liveCost
-            }
-          : {
-              predEdgeBps: predEdgeSellBps,
-              netEdgeBps: applyCostToEdge(predEdgeSellBps, liveCost),
-              cost: liveCost
-            };
+        const liveCost =
+          side === "BUY"
+            ? computeCostBreakdown({
+                role: "TAKER",
+                side: "BUY",
+                expectedValuePerShare: pHat,
+                midPx: mid,
+                quotePx: ask,
+                spreadPx: spread,
+                sizeShares: size,
+                marketProfile,
+                feeRateBps: candidate.feeRateBps,
+                slippageBps: this.config.slippageBps,
+                adverseSelectionBps: this.config.adverseSelectionBps,
+                queueLossBps: this.config.queueLossBps,
+                rebateBps: 0,
+                inventoryPenaltyBps: this.config.inventoryPenaltyBps
+              })
+            : computeCostBreakdown({
+                role: "TAKER",
+                side: "SELL",
+                midPx: mid,
+                quotePx: bid,
+                spreadPx: spread,
+                sizeShares: size,
+                marketProfile,
+                feeRateBps: candidate.feeRateBps,
+                slippageBps: this.config.slippageBps,
+                adverseSelectionBps: this.config.adverseSelectionBps,
+                queueLossBps: this.config.queueLossBps,
+                rebateBps: 0,
+                inventoryPenaltyBps: this.config.inventoryPenaltyBps
+              });
+        const trace =
+          side === "BUY"
+            ? {
+                predEdgeBps: predEdgeBuyBps,
+                netEdgeBps: applyCostToEdge(predEdgeBuyBps, liveCost),
+                cost: liveCost
+              }
+            : {
+                predEdgeBps: predEdgeSellBps,
+                netEdgeBps: applyCostToEdge(predEdgeSellBps, liveCost),
+                cost: liveCost
+              };
         if (trace.netEdgeBps < this.config.minNetEdgeBps) continue;
         const edgeSanity = validateEdgeCostSanity({
           predEdgeBps: trace.predEdgeBps,
@@ -672,9 +675,8 @@ export class TakerLoop {
         let externalOrderId: string | null = null;
         let clientOrderId = `${decisionGroupId}:${wallet.walletId}`;
         const shadowOnly = isShadowOnlyProfile(marketProfile);
-        const shouldAttemptLive = this.config.executionMode === "FULL" &&
-          this.deps.execution?.isEnabled() &&
-          !shadowOnly;
+        const shouldAttemptLive =
+          this.config.executionMode === "FULL" && this.deps.execution?.isEnabled() && !shadowOnly;
         let status: string = shouldAttemptLive ? "PENDING" : "OPEN";
         let filledSize = 0;
         let filledPrice: number | null = null;
@@ -690,7 +692,7 @@ export class TakerLoop {
             kind,
             reason: "p_hat_net_edge",
             decisionGroupId,
-            feeRateBps: finiteOr(candidate.feeRateBps, 0),
+            feeRateBps: candidate.feeRateBps,
             postOnly: false
           });
           if (!result) continue;
@@ -877,10 +879,7 @@ export class TakerLoop {
         const key = shadowPositionKey(wallet.walletId, state.tokenId);
         const hysteresis = this.getOrCreateCloseState(key);
         const closeCooldownMs = Math.max(0, closeCfg.closeCooldownSec) * 1000;
-        if (
-          hysteresis.lastCloseAttemptTs != null &&
-          input.ts - hysteresis.lastCloseAttemptTs < closeCooldownMs
-        ) {
+        if (hysteresis.lastCloseAttemptTs != null && input.ts - hysteresis.lastCloseAttemptTs < closeCooldownMs) {
           continue;
         }
 
@@ -906,10 +905,7 @@ export class TakerLoop {
           feeRateBps: candidate.feeRateBps,
           takerBaseFee: candidate.takerBaseFee
         });
-        const scopeDecision = decideMarketProfileScope(
-          marketProfile,
-          this.config.marketScope ?? "PROFILE_KNOWN_ONLY"
-        );
+        const scopeDecision = decideMarketProfileScope(marketProfile, this.config.marketScope ?? "PROFILE_KNOWN_ONLY");
         if (!scopeDecision.ok || marketProfile === "UNKNOWN") continue;
 
         const closeSide: "BUY" | "SELL" = state.position > 0 ? "SELL" : "BUY";
@@ -938,51 +934,50 @@ export class TakerLoop {
         const prior = await this.deps.belief.estimate(beliefContext);
         if (!prior) continue;
         const pHat = prior.probability;
+        if (!Number.isFinite(pHat) || pHat < 0 || pHat > 1) continue;
 
         const quotePx = closeSide === "BUY" ? ask : bid;
         const capSize = this.config.maxNotionalPerOrderUsd / quotePx;
         const tentativeSize = Math.min(Math.abs(state.position), capSize);
         if (!Number.isFinite(tentativeSize) || tentativeSize <= 0) continue;
 
-        const closeCost = closeSide === "BUY"
-          ? computeCostBreakdown({
-              role: "TAKER",
-              side: "BUY",
-              midPx: mid,
-              quotePx: ask,
-              spreadPx: spread,
-              sizeShares: tentativeSize,
-              marketProfile,
-              feeRateBps: finiteOr(candidate.feeRateBps, 0),
-              slippageBps: this.config.slippageBps,
-              adverseSelectionBps: this.config.adverseSelectionBps,
-              queueLossBps: this.config.queueLossBps,
-              rebateBps: 0,
-              inventoryPenaltyBps: this.config.inventoryPenaltyBps
-            })
-          : computeCostBreakdown({
-              role: "TAKER",
-              side: "SELL",
-              midPx: mid,
-              quotePx: bid,
-              spreadPx: spread,
-              sizeShares: tentativeSize,
-              marketProfile,
-              feeRateBps: finiteOr(candidate.feeRateBps, 0),
-              slippageBps: this.config.slippageBps,
-              adverseSelectionBps: this.config.adverseSelectionBps,
-              queueLossBps: this.config.queueLossBps,
-              rebateBps: 0,
-              inventoryPenaltyBps: this.config.inventoryPenaltyBps
-            });
+        const closeCost =
+          closeSide === "BUY"
+            ? computeCostBreakdown({
+                role: "TAKER",
+                side: "BUY",
+                expectedValuePerShare: pHat,
+                midPx: mid,
+                quotePx: ask,
+                spreadPx: spread,
+                sizeShares: tentativeSize,
+                marketProfile,
+                feeRateBps: candidate.feeRateBps,
+                slippageBps: this.config.slippageBps,
+                adverseSelectionBps: this.config.adverseSelectionBps,
+                queueLossBps: this.config.queueLossBps,
+                rebateBps: 0,
+                inventoryPenaltyBps: this.config.inventoryPenaltyBps
+              })
+            : computeCostBreakdown({
+                role: "TAKER",
+                side: "SELL",
+                midPx: mid,
+                quotePx: bid,
+                spreadPx: spread,
+                sizeShares: tentativeSize,
+                marketProfile,
+                feeRateBps: candidate.feeRateBps,
+                slippageBps: this.config.slippageBps,
+                adverseSelectionBps: this.config.adverseSelectionBps,
+                queueLossBps: this.config.queueLossBps,
+                rebateBps: 0,
+                inventoryPenaltyBps: this.config.inventoryPenaltyBps
+              });
 
-        const predCloseEdgeBps = closeSide === "BUY"
-          ? ((pHat - ask) / mid) * 10_000
-          : ((bid - pHat) / mid) * 10_000;
+        const predCloseEdgeBps = closeSide === "BUY" ? ((pHat - ask) / mid) * 10_000 : ((bid - pHat) / mid) * 10_000;
         const netCloseEdgeBps = applyCostToEdge(predCloseEdgeBps, closeCost);
-        const predHoldEdgeBps = state.position > 0
-          ? ((pHat - mid) / mid) * 10_000
-          : ((mid - pHat) / mid) * 10_000;
+        const predHoldEdgeBps = state.position > 0 ? ((pHat - mid) / mid) * 10_000 : ((mid - pHat) / mid) * 10_000;
         const edgeBelow = predHoldEdgeBps < closeCfg.closeMinEdgeToHoldBps;
         if (edgeBelow) {
           hysteresis.belowTicks += 1;
@@ -992,16 +987,13 @@ export class TakerLoop {
           hysteresis.belowSinceTs = null;
         }
 
-        const maxHoldTriggered =
-          state.openTs != null && input.ts - state.openTs >= closeCfg.maxHoldSec * 1000;
+        const maxHoldTriggered = state.openTs != null && input.ts - state.openTs >= closeCfg.maxHoldSec * 1000;
         const inventoryTriggered =
-          state.position > this.config.maxLongPerToken ||
-          state.position < -this.config.maxShortPerToken;
+          state.position > this.config.maxLongPerToken || state.position < -this.config.maxShortPerToken;
         const edgeDecayTriggered =
           edgeBelow &&
           (hysteresis.belowTicks >= closeCfg.edgeBelowTicks ||
-            (hysteresis.belowSinceTs != null &&
-              input.ts - hysteresis.belowSinceTs >= closeCfg.edgeBelowMs));
+            (hysteresis.belowSinceTs != null && input.ts - hysteresis.belowSinceTs >= closeCfg.edgeBelowMs));
         const edgeDecayActionable = edgeDecayTriggered && netCloseEdgeBps >= 0;
 
         let closeReason: "close:max_hold" | "close:inventory_cap" | "close:edge_decay" | null = null;
@@ -1017,9 +1009,7 @@ export class TakerLoop {
         let clientOrderId = `${decisionGroupId}:${wallet.walletId}`;
         const shadowOnly = isShadowOnlyProfile(marketProfile);
         const shouldAttemptLive =
-          this.config.executionMode === "FULL" &&
-          this.deps.execution?.isEnabled() &&
-          !shadowOnly;
+          this.config.executionMode === "FULL" && this.deps.execution?.isEnabled() && !shadowOnly;
         let status: string = shouldAttemptLive ? "PENDING" : "OPEN";
         let filledSize = 0;
         let filledPrice: number | null = null;
@@ -1035,7 +1025,7 @@ export class TakerLoop {
             kind: closeKind,
             reason: closeReason,
             decisionGroupId,
-            feeRateBps: finiteOr(candidate.feeRateBps, 0),
+            feeRateBps: candidate.feeRateBps,
             postOnly: false
           });
           if (!result) continue;
@@ -1121,10 +1111,7 @@ export class TakerLoop {
         };
         this.insertSubmitOrderAndDecisionTx(closeOrderRow, closeDecisionRow);
 
-        input.positions.set(
-          key,
-          (input.positions.get(key) ?? state.position) + (closeSide === "BUY" ? size : -size)
-        );
+        input.positions.set(key, (input.positions.get(key) ?? state.position) + (closeSide === "BUY" ? size : -size));
         closed.add(key);
         hysteresis.lastCloseAttemptTs = input.ts;
         hysteresis.belowTicks = 0;
@@ -1164,7 +1151,10 @@ export class TakerLoop {
     }
   }
 
-  private parseTradePayload(payloadJson: string): { side: "BUY" | "SELL" | null; price: number | null } {
+  private parseTradePayload(payloadJson: string): {
+    side: "BUY" | "SELL" | null;
+    price: number | null;
+  } {
     try {
       const parsed = JSON.parse(payloadJson) as { side?: unknown; price?: unknown };
       const rawSide = typeof parsed.side === "string" ? parsed.side.trim().toUpperCase() : "";
@@ -1232,12 +1222,10 @@ export class TakerLoop {
     }
 
     const dominantSideRatio = Math.max(buyCount, sellCount) / Math.max(1, validCount);
-    const tradeShockBps = Number.isFinite(input.mid) && input.mid > 0
-      ? Math.abs((lastPrice - firstPrice) / input.mid) * 10_000
-      : 0;
-    const microShockBps = Number.isFinite(input.mid) && input.mid > 0
-      ? Math.abs((input.micropriceMinusMid / input.mid) * 10_000)
-      : 0;
+    const tradeShockBps =
+      Number.isFinite(input.mid) && input.mid > 0 ? Math.abs((lastPrice - firstPrice) / input.mid) * 10_000 : 0;
+    const microShockBps =
+      Number.isFinite(input.mid) && input.mid > 0 ? Math.abs((input.micropriceMinusMid / input.mid) * 10_000) : 0;
 
     const directionallyOneSided = dominantSideRatio >= cfg.dominantSideRatio;
     const tradeShockTriggered = directionallyOneSided && tradeShockBps >= cfg.shockBps;

@@ -1,7 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
-
 const unauthorized = (): NextResponse =>
   new NextResponse("Authentication required", {
     status: 401,
@@ -13,7 +11,7 @@ const unauthorized = (): NextResponse =>
 
 const unavailable = (): NextResponse =>
   NextResponse.json(
-    { error: "Mutating APIs are disabled until dashboard credentials are configured." },
+    { error: "Dashboard unavailable until credentials are configured." },
     { status: 503, headers: { "cache-control": "no-store" } }
   );
 
@@ -28,12 +26,9 @@ export function middleware(request: NextRequest): NextResponse {
     return NextResponse.next();
   }
 
-  const isProductionMutation =
-    process.env.NODE_ENV === "production" &&
-    request.nextUrl.pathname.startsWith("/api/") &&
-    !READ_METHODS.has(request.method);
-
-  return isProductionMutation ? unavailable() : NextResponse.next();
+  // A public read API or event stream can expose the same customer evidence as
+  // a write API. A production instance without credentials is unavailable.
+  return process.env.NODE_ENV === "production" ? unavailable() : NextResponse.next();
 }
 
 export const config = {

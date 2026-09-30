@@ -251,13 +251,10 @@ const MetricCard = ({
   helperText
 }: MetricCardProps) => (
   <Card
-    className={cn(
-      "backdrop-blur-sm",
-      isPrimary ? "bg-primary/5 border-primary/20" : "bg-card/30 border-border/40"
-    )}
+    className={cn("backdrop-blur-sm", isPrimary ? "bg-primary/5 border-primary/20" : "bg-card/30 border-border/40")}
   >
-  <CardContent className="p-4">
-    <div className="flex items-center gap-2 mb-2">
+    <CardContent className="p-4">
+      <div className="flex items-center gap-2 mb-2">
         {icon}
         <div
           className={cn(
@@ -267,15 +264,11 @@ const MetricCard = ({
         >
           {label}
         </div>
-    </div>
-    {helperText && (
-      <p className="text-xs text-muted-foreground font-mono mt-1 leading-snug">
-        {helperText}
-      </p>
-    )}
-    <div
-      className={cn(
-        "text-2xl font-mono font-bold",
+      </div>
+      {helperText && <p className="text-xs text-muted-foreground font-mono mt-1 leading-snug">{helperText}</p>}
+      <div
+        className={cn(
+          "text-2xl font-mono font-bold",
           isPositive && "text-neon-green",
           isNegative && "text-rose-500",
           isWarning && "text-muted-foreground",
@@ -311,14 +304,8 @@ const ExposureBar = ({ longExposure, shortExposure }: ExposureBarProps) => {
         </span>
       </div>
       <div className="h-2 bg-white/5 rounded-full overflow-hidden flex">
-        <div
-          className="h-full bg-neon-green/60 transition-all duration-500"
-          style={{ width: `${longPct}%` }}
-        />
-        <div
-          className="h-full bg-rose-500/60 transition-all duration-500"
-          style={{ width: `${shortPct}%` }}
-        />
+        <div className="h-full bg-neon-green/60 transition-all duration-500" style={{ width: `${longPct}%` }} />
+        <div className="h-full bg-rose-500/60 transition-all duration-500" style={{ width: `${shortPct}%` }} />
       </div>
     </div>
   );
@@ -344,18 +331,10 @@ const statusChipClass = (status: "running" | "degraded" | "stalled" | "no_data" 
   return "bg-muted/40 text-muted-foreground border-border/40";
 };
 
-const RuntimeLaneCard = ({
-  laneLabel,
-  lane
-}: {
-  laneLabel: "Maker" | "Taker";
-  lane: LaneRuntimeHealth;
-}) => (
+const RuntimeLaneCard = ({ laneLabel, lane }: { laneLabel: "Maker" | "Taker"; lane: LaneRuntimeHealth }) => (
   <div className="rounded border border-border/40 bg-card/20 p-3 space-y-2">
     <div className="flex items-center justify-between">
-      <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
-        {laneLabel}
-      </div>
+      <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">{laneLabel}</div>
       <span
         className={cn(
           "text-[10px] font-mono uppercase tracking-widest border px-2 py-0.5 rounded-sm",
@@ -456,11 +435,7 @@ type ResearchPanelProps = {
   onHorizonChange?: (horizon: "5m" | "10m" | "20m") => void;
 };
 
-const ResearchPanel = ({
-  wallets,
-  defaultHorizon = "10m",
-  onHorizonChange
-}: ResearchPanelProps) => {
+const ResearchPanel = ({ wallets, defaultHorizon = "10m", onHorizonChange }: ResearchPanelProps) => {
   const active = wallets.filter((w) => Boolean(w.autoTradeEnabled));
 
   const fmtSide = (side?: string | null): string => {
@@ -511,17 +486,11 @@ const ResearchPanel = ({
       <CardContent className="space-y-4">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs font-mono">
           <div className="rounded-md border border-border/40 p-3">
-            <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-              Objective
-            </div>
-            <div className="mt-2 text-sm text-foreground">
-              System understanding (edge discovery)
-            </div>
+            <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Objective</div>
+            <div className="mt-2 text-sm text-foreground">System understanding (edge discovery)</div>
           </div>
           <div className="rounded-md border border-border/40 p-3">
-            <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-              Primary Horizon
-            </div>
+            <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Primary Horizon</div>
             <div className="mt-2 flex flex-wrap gap-1">
               {(["5m", "10m", "20m"] as const).map((h) => (
                 <button
@@ -540,9 +509,7 @@ const ResearchPanel = ({
             </div>
           </div>
           <div className="rounded-md border border-border/40 p-3">
-            <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-              Active Wallets
-            </div>
+            <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Active Wallets</div>
             <div className="mt-2 text-sm text-foreground">{active.length}</div>
           </div>
         </div>
@@ -570,20 +537,14 @@ const ResearchPanel = ({
                   </td>
                   <td className="py-2 pr-4">{modeFor(w)}</td>
                   <td className="py-2 pr-4">{fmtSide(w.takerSide)}</td>
-                  <td className="py-2 pr-4 text-right">
-                    {w.minConfidence != null ? w.minConfidence.toFixed(2) : "—"}
-                  </td>
-                  <td className="py-2 pr-4 text-right">
-                    {w.minEdge != null ? w.minEdge.toFixed(3) : "—"}
-                  </td>
+                  <td className="py-2 pr-4 text-right">{w.minConfidence != null ? w.minConfidence.toFixed(2) : "—"}</td>
+                  <td className="py-2 pr-4 text-right">{w.minEdge != null ? w.minEdge.toFixed(3) : "—"}</td>
                   <td className="py-2 pr-4 text-right">
                     {w.sizeMultiplier != null ? w.sizeMultiplier.toFixed(2) : "—"}
                   </td>
                   <td className="py-2 pr-4 text-right">{allowlistCount(w.marketAllowlist)}</td>
                   <td className="py-2 pr-4 text-[11px] text-muted-foreground">{filterSummary(w.marketFilter)}</td>
-                  <td className="py-2 text-right">
-                    {w.maxDailyLossUsd != null ? formatUsd(w.maxDailyLossUsd) : "—"}
-                  </td>
+                  <td className="py-2 text-right">{w.maxDailyLossUsd != null ? formatUsd(w.maxDailyLossUsd) : "—"}</td>
                 </tr>
               ))}
               {active.length === 0 && (
@@ -648,10 +609,7 @@ const WalletSelector = ({ wallets, activeWalletId, onSelect, isLoading }: Wallet
           </span>
         )}
         <ChevronDown
-          className={cn(
-            "h-3.5 w-3.5 text-muted-foreground transition-transform duration-200",
-            isOpen && "rotate-180"
-          )}
+          className={cn("h-3.5 w-3.5 text-muted-foreground transition-transform duration-200", isOpen && "rotate-180")}
         />
       </button>
 
@@ -738,12 +696,12 @@ const MakerPerformanceView = ({ data }: { data: ConsolidatedMetrics }) => {
       <div className="grid gap-4 grid-cols-2 md:grid-cols-3 lg:grid-cols-6">
         <MetricCard
           icon={<TrendingUp className="h-4 w-4 text-primary" />}
-          label="Net PnL"
+          label="Gross PnL"
           value={formatCurrency(maker.netPnl)}
           isPrimary
           isPositive={maker.netPnl > 0}
           isNegative={maker.netPnl < 0}
-          helperText="Shadow (real fills)"
+          helperText="Shadow; fees and missing marks excluded"
         />
         <MetricCard
           icon={<BarChart3 className="h-4 w-4 text-muted-foreground" />}
@@ -795,17 +753,13 @@ const MakerPerformanceView = ({ data }: { data: ConsolidatedMetrics }) => {
               <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter mb-2">
                 Long Exposure
               </div>
-              <div className="text-2xl font-mono font-bold text-neon-green">
-                {formatNum(maker.longExposure, 2)}
-              </div>
+              <div className="text-2xl font-mono font-bold text-neon-green">{formatNum(maker.longExposure, 2)}</div>
             </div>
             <div className="text-center">
               <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter mb-2">
                 Short Exposure
               </div>
-              <div className="text-2xl font-mono font-bold text-rose-500">
-                {formatNum(maker.shortExposure, 2)}
-              </div>
+              <div className="text-2xl font-mono font-bold text-rose-500">{formatNum(maker.shortExposure, 2)}</div>
             </div>
             <div className="text-center">
               <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter mb-2">
@@ -861,13 +815,10 @@ const MakerPerformanceView = ({ data }: { data: ConsolidatedMetrics }) => {
             </div>
             <div className="text-center">
               <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter mb-2">
-                Net Total
+                Gross Total
               </div>
               <div
-                className={cn(
-                  "text-3xl font-mono font-bold",
-                  maker.netPnl > 0 ? "text-neon-green" : "text-rose-500"
-                )}
+                className={cn("text-3xl font-mono font-bold", maker.netPnl > 0 ? "text-neon-green" : "text-rose-500")}
               >
                 {formatCurrency(maker.netPnl)}
               </div>
@@ -945,28 +896,20 @@ const MakerPerformanceView = ({ data }: { data: ConsolidatedMetrics }) => {
               <div className="text-2xl font-mono font-bold text-neon-green">
                 {formatPct(maker.rewardEligibleRate24h)}
               </div>
-              <div className="text-[10px] font-mono text-muted-foreground mt-1">
-                {rewardSampleHelper}
-              </div>
+              <div className="text-[10px] font-mono text-muted-foreground mt-1">{rewardSampleHelper}</div>
             </div>
             <div className="text-center">
               <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter mb-2">
                 Avg Q-Min (24h)
               </div>
-              <div className="text-2xl font-mono font-bold">
-                {formatNum(maker.rewardAvgQMin24h, 4)}
-              </div>
+              <div className="text-2xl font-mono font-bold">{formatNum(maker.rewardAvgQMin24h, 4)}</div>
             </div>
             <div className="text-center">
               <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter mb-2">
                 Fee Equivalent (24h)
               </div>
-              <div className="text-2xl font-mono font-bold">
-                {formatUsd(maker.feeEquivalent24h, 2)}
-              </div>
-              <div className="text-[10px] font-mono text-muted-foreground mt-1">
-                Fee curve weighted
-              </div>
+              <div className="text-2xl font-mono font-bold">{formatUsd(maker.feeEquivalent24h, 2)}</div>
+              <div className="text-[10px] font-mono text-muted-foreground mt-1">Fee curve weighted</div>
             </div>
             <div className="text-center">
               <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter mb-2">
@@ -1056,9 +999,7 @@ const TakerPerformanceView = ({ data }: { data: ConsolidatedMetrics }) => {
               <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter mb-2">
                 Open Positions
               </div>
-              <div className="text-3xl font-mono font-bold text-blue-400">
-                {taker.openPositions}
-              </div>
+              <div className="text-3xl font-mono font-bold text-blue-400">{taker.openPositions}</div>
             </div>
             <div className="text-center">
               <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter mb-2">
@@ -1093,15 +1034,11 @@ const TakerPerformanceView = ({ data }: { data: ConsolidatedMetrics }) => {
               <div className="text-2xl font-mono font-bold">{taker.closedPositions}</div>
             </div>
             <div className="text-center">
-              <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter mb-2">
-                Wins
-              </div>
+              <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter mb-2">Wins</div>
               <div className="text-2xl font-mono font-bold text-neon-green">{taker.winCount}</div>
             </div>
             <div className="text-center">
-              <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter mb-2">
-                Losses
-              </div>
+              <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter mb-2">Losses</div>
               <div className="text-2xl font-mono font-bold text-rose-500">{taker.lossCount}</div>
             </div>
             <div className="text-center">
@@ -1202,12 +1139,12 @@ const ConsolidatedPerformanceView = ({ data }: { data: ConsolidatedMetrics }) =>
     <div className="grid gap-4 grid-cols-2 md:grid-cols-3 lg:grid-cols-6">
       <MetricCard
         icon={<TrendingUp className="h-4 w-4 text-primary" />}
-        label="Net PnL"
+        label="Gross PnL"
         value={formatCurrency(data.netPnl)}
         isPrimary
         isPositive={data.netPnl > 0}
         isNegative={data.netPnl < 0}
-        helperText="Maker uses shadow fills"
+        helperText="Shadow; fees and missing marks excluded"
       />
       <MetricCard
         icon={<Target className="h-4 w-4 text-muted-foreground" />}
@@ -1248,9 +1185,7 @@ const ConsolidatedPerformanceView = ({ data }: { data: ConsolidatedMetrics }) =>
       <CardContent className="p-6">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-8">
           <div className="text-center">
-            <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter mb-2">
-              Realized
-            </div>
+            <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter mb-2">Realized</div>
             <div
               className={cn(
                 "text-3xl font-mono font-bold",
@@ -1275,14 +1210,9 @@ const ConsolidatedPerformanceView = ({ data }: { data: ConsolidatedMetrics }) =>
           </div>
           <div className="text-center">
             <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter mb-2">
-              Net Total
+              Gross Total
             </div>
-            <div
-              className={cn(
-                "text-3xl font-mono font-bold",
-                data.netPnl > 0 ? "text-neon-green" : "text-rose-500"
-              )}
-            >
+            <div className={cn("text-3xl font-mono font-bold", data.netPnl > 0 ? "text-neon-green" : "text-rose-500")}>
               {formatCurrency(data.netPnl)}
             </div>
           </div>
@@ -1306,9 +1236,7 @@ const ConsolidatedPerformanceView = ({ data }: { data: ConsolidatedMetrics }) =>
         <CardContent className="p-4">
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1">
-              <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter">
-                Realized PnL
-              </div>
+              <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter">Realized PnL</div>
               <div
                 className={cn(
                   "text-lg font-mono font-bold",
@@ -1319,9 +1247,7 @@ const ConsolidatedPerformanceView = ({ data }: { data: ConsolidatedMetrics }) =>
               </div>
             </div>
             <div className="space-y-1">
-              <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter">
-                Win Rate
-              </div>
+              <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter">Win Rate</div>
               <div
                 className={cn(
                   "text-lg font-mono font-bold",
@@ -1342,12 +1268,8 @@ const ConsolidatedPerformanceView = ({ data }: { data: ConsolidatedMetrics }) =>
               </div>
             </div>
             <div className="space-y-1">
-              <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter">
-                Avg Hold
-              </div>
-              <div className="text-lg font-mono font-bold">
-                {formatDuration(data.taker.avgHoldSec)}
-              </div>
+              <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter">Avg Hold</div>
+              <div className="text-lg font-mono font-bold">{formatDuration(data.taker.avgHoldSec)}</div>
             </div>
           </div>
         </CardContent>
@@ -1368,7 +1290,7 @@ const ConsolidatedPerformanceView = ({ data }: { data: ConsolidatedMetrics }) =>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1">
               <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter">
-                Net PnL (Shadow)
+                Gross PnL (Shadow)
               </div>
               <div
                 className={cn(
@@ -1383,9 +1305,7 @@ const ConsolidatedPerformanceView = ({ data }: { data: ConsolidatedMetrics }) =>
               <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter">
                 Spread Capture
               </div>
-              <div className="text-lg font-mono font-bold">
-                {formatPct(data.maker.avgSpreadCapture)}
-              </div>
+              <div className="text-lg font-mono font-bold">{formatPct(data.maker.avgSpreadCapture)}</div>
             </div>
             <div className="space-y-1">
               <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter">
@@ -1430,17 +1350,13 @@ const ConsolidatedPerformanceView = ({ data }: { data: ConsolidatedMetrics }) =>
             <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter mb-2">
               Long Exposure
             </div>
-            <div className="text-2xl font-mono font-bold text-neon-green">
-              {formatNum(data.longExposure, 2)}
-            </div>
+            <div className="text-2xl font-mono font-bold text-neon-green">{formatNum(data.longExposure, 2)}</div>
           </div>
           <div className="text-center">
             <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter mb-2">
               Short Exposure
             </div>
-            <div className="text-2xl font-mono font-bold text-rose-500">
-              {formatNum(data.shortExposure, 2)}
-            </div>
+            <div className="text-2xl font-mono font-bold text-rose-500">{formatNum(data.shortExposure, 2)}</div>
           </div>
           <div className="text-center">
             <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter mb-2">
@@ -1488,9 +1404,7 @@ const ConsolidatedPerformanceView = ({ data }: { data: ConsolidatedMetrics }) =>
             )}
           </div>
           <div className="space-y-2">
-            <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter">
-              Skip Breakdown
-            </div>
+            <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-tighter">Skip Breakdown</div>
             <ul className="text-sm font-mono space-y-1">
               {data.skipBreakdown &&
                 Object.entries(data.skipBreakdown)
@@ -1517,10 +1431,50 @@ const ConsolidatedPerformanceView = ({ data }: { data: ConsolidatedMetrics }) =>
 // ============================================================================
 
 type EdgeCalibrationData = {
-  taker: { kind: string; buckets: Array<{ label: string; count: number; avgRealizedMarkoutBps: number | null }>; decomposition: { avgPredEdgeBps: number | null; avgSpreadBps: number | null; avgFeesBps: number | null; avgExpectedSlippageBps: number | null; avgCostBps: number | null; avgNetEdgeBps: number | null; avgRealizedMarkoutBps: number | null; fillCount: number } };
-  maker: { kind: string; buckets: Array<{ label: string; count: number; avgRealizedMarkoutBps: number | null }>; decomposition: { avgPredEdgeBps: number | null; avgSpreadBps: number | null; avgFeesBps: number | null; avgExpectedSlippageBps: number | null; avgCostBps: number | null; avgNetEdgeBps: number | null; avgRealizedMarkoutBps: number | null; fillCount: number } };
-  combined: { takerRealizedMarkoutBps: number | null; makerRealizedMarkoutBps: number | null; takerFills: number; makerFills: number; takerWinRate: number; makerFillRate: number };
-  diagnostics?: { taker: { fills_total: number; fills_with_markout: number; fills_with_pred_edge: number; fills_in_calibration: number } };
+  taker: {
+    kind: string;
+    buckets: Array<{ label: string; count: number; avgRealizedMarkoutBps: number | null }>;
+    decomposition: {
+      avgPredEdgeBps: number | null;
+      avgSpreadBps: number | null;
+      avgFeesBps: number | null;
+      avgExpectedSlippageBps: number | null;
+      avgCostBps: number | null;
+      avgNetEdgeBps: number | null;
+      avgRealizedMarkoutBps: number | null;
+      fillCount: number;
+    };
+  };
+  maker: {
+    kind: string;
+    buckets: Array<{ label: string; count: number; avgRealizedMarkoutBps: number | null }>;
+    decomposition: {
+      avgPredEdgeBps: number | null;
+      avgSpreadBps: number | null;
+      avgFeesBps: number | null;
+      avgExpectedSlippageBps: number | null;
+      avgCostBps: number | null;
+      avgNetEdgeBps: number | null;
+      avgRealizedMarkoutBps: number | null;
+      fillCount: number;
+    };
+  };
+  combined: {
+    takerRealizedMarkoutBps: number | null;
+    makerRealizedMarkoutBps: number | null;
+    takerFills: number;
+    makerFills: number;
+    takerWinRate: number;
+    makerFillRate: number;
+  };
+  diagnostics?: {
+    taker: {
+      fills_total: number;
+      fills_with_markout: number;
+      fills_with_pred_edge: number;
+      fills_in_calibration: number;
+    };
+  };
 };
 
 type PerformanceClientProps = {
@@ -1663,30 +1617,29 @@ export function PerformanceClient({
     [horizonMs]
   );
 
-  const fetchMultiHorizonKpi = React.useCallback(
-    async (lane: "policy_v0" | "all", options?: { silent?: boolean }) => {
-      if (!options?.silent) setMultiHorizonLoading(true);
-      try {
-        const params = new URLSearchParams({ windowHours: "24", t: String(Date.now()) });
-        if (lane === "policy_v0") {
-          params.set("lane", "policy_v0");
-        }
-        const res = await fetch(`/api/shadow-kpi/multi-horizon?${params.toString()}`, { cache: "no-store" });
-        if (res.ok) {
-          const kpi = (await res.json()) as ShadowKpiMultiHorizonResponse;
-          setMultiHorizonKpi(kpi);
-        } else {
-          setMultiHorizonKpi(null);
-        }
-      } catch (error) {
-        console.error("Failed to fetch multi-horizon KPI", error);
-        setMultiHorizonKpi(null);
-      } finally {
-        if (!options?.silent) setMultiHorizonLoading(false);
+  const fetchMultiHorizonKpi = React.useCallback(async (lane: "policy_v0" | "all", options?: { silent?: boolean }) => {
+    if (!options?.silent) setMultiHorizonLoading(true);
+    try {
+      const params = new URLSearchParams({ windowHours: "24", t: String(Date.now()) });
+      if (lane === "policy_v0") {
+        params.set("lane", "policy_v0");
       }
-    },
-    []
-  );
+      const res = await fetch(`/api/shadow-kpi/multi-horizon?${params.toString()}`, {
+        cache: "no-store"
+      });
+      if (res.ok) {
+        const kpi = (await res.json()) as ShadowKpiMultiHorizonResponse;
+        setMultiHorizonKpi(kpi);
+      } else {
+        setMultiHorizonKpi(null);
+      }
+    } catch (error) {
+      console.error("Failed to fetch multi-horizon KPI", error);
+      setMultiHorizonKpi(null);
+    } finally {
+      if (!options?.silent) setMultiHorizonLoading(false);
+    }
+  }, []);
 
   const fetchTimeTrendKpi = React.useCallback(
     async (lane: "policy_v0" | "all", hMs: number, options?: { silent?: boolean }) => {
@@ -1699,7 +1652,9 @@ export function PerformanceClient({
         if (lane === "policy_v0") {
           params.set("lane", "policy_v0");
         }
-        const res = await fetch(`/api/shadow-kpi/time-trend?${params.toString()}`, { cache: "no-store" });
+        const res = await fetch(`/api/shadow-kpi/time-trend?${params.toString()}`, {
+          cache: "no-store"
+        });
         if (res.ok) {
           const kpi = (await res.json()) as ShadowKpiTimeTrendResponse;
           setTimeTrendKpi(kpi);
@@ -1771,11 +1726,7 @@ export function PerformanceClient({
 
   const activeWallet = wallets.find((w) => w.id === activeWalletId);
 
-  const walletTypeAuto: WalletType = !activeWallet
-    ? "all"
-    : activeWallet.makerEnabled
-      ? "maker"
-      : "taker";
+  const walletTypeAuto: WalletType = !activeWallet ? "all" : activeWallet.makerEnabled ? "maker" : "taker";
 
   const getSubtitle = () => {
     if (viewMode === "maker") return "Inventory & market making metrics";
@@ -1790,7 +1741,17 @@ export function PerformanceClient({
     void fetchTimeTrendKpi(selectedLane, horizonMs);
     void fetchLedger();
     void fetchEdgeMap();
-  }, [activeWalletId, fetchShadow, fetchLaneKpi, fetchMultiHorizonKpi, fetchTimeTrendKpi, fetchLedger, fetchEdgeMap, selectedLane, horizonMs]);
+  }, [
+    activeWalletId,
+    fetchShadow,
+    fetchLaneKpi,
+    fetchMultiHorizonKpi,
+    fetchTimeTrendKpi,
+    fetchLedger,
+    fetchEdgeMap,
+    selectedLane,
+    horizonMs
+  ]);
 
   React.useEffect(() => {
     const intervalId = setInterval(() => {
@@ -1837,16 +1798,13 @@ export function PerformanceClient({
     horizonMs
   ]);
 
-  const formatBps = (value: number | null): string =>
-    value == null ? "—" : `${value.toFixed(2)} bps`;
+  const formatBps = (value: number | null): string => (value == null ? "—" : `${value.toFixed(2)} bps`);
 
-  const formatFillRate = (value: number | null): string =>
-    value == null ? "—" : formatPct(value);
+  const formatFillRate = (value: number | null): string => (value == null ? "—" : formatPct(value));
 
   const formatCount = (value: number): string => value.toLocaleString();
 
-  const formatRatio = (value: number | null): string =>
-    value == null ? "—" : formatPct(value);
+  const formatRatio = (value: number | null): string => (value == null ? "—" : formatPct(value));
 
   const formatUpdated = (ts: number): string => new Date(ts).toLocaleTimeString();
 
@@ -1856,9 +1814,7 @@ export function PerformanceClient({
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-bold tracking-tight font-display text-foreground">
-              TRADE PERFORMANCE
-            </h1>
+            <h1 className="text-2xl font-bold tracking-tight font-display text-foreground">TRADE PERFORMANCE</h1>
             {walletTypeAuto !== "all" && (
               <span
                 className={cn(
@@ -1893,9 +1849,7 @@ export function PerformanceClient({
               {showDiagnostics ? "Diagnostics On" : "Diagnostics Off"}
             </button>
           </div>
-          <p className="text-xs text-muted-foreground font-mono uppercase tracking-widest mt-1">
-            {getSubtitle()}
-          </p>
+          <p className="text-xs text-muted-foreground font-mono uppercase tracking-widest mt-1">{getSubtitle()}</p>
           <p className="text-[10px] text-muted-foreground font-mono uppercase tracking-widest mt-1">
             Question: are we making risk-adjusted money, and which lane is driving it?
           </p>
@@ -1942,12 +1896,12 @@ export function PerformanceClient({
           <div className="grid gap-4 grid-cols-2 md:grid-cols-4">
             <MetricCard
               icon={<TrendingUp className="h-4 w-4 text-primary" />}
-              label="Realized PnL"
+              label="Gross Realized PnL"
               value={formatCurrency(data.totalRealized)}
               isPrimary
               isPositive={data.totalRealized > 0}
               isNegative={data.totalRealized < 0}
-              helperText="Closed PnL only"
+              helperText="Closed PnL; fees excluded"
             />
             <MetricCard
               icon={<Layers className="h-4 w-4 text-muted-foreground" />}
@@ -1955,15 +1909,15 @@ export function PerformanceClient({
               value={formatCurrency(data.totalUnrealized)}
               isPositive={data.totalUnrealized > 0}
               isNegative={data.totalUnrealized < 0}
-              helperText="Open maker inventory"
+              helperText="Open inventory with available marks"
             />
             <MetricCard
               icon={<Target className="h-4 w-4 text-muted-foreground" />}
-              label="Net Total"
+              label="Gross Total"
               value={formatCurrency(data.netPnl)}
               isPositive={data.netPnl > 0}
               isNegative={data.netPnl < 0}
-              helperText="Realized + unrealized"
+              helperText="Realized + marked unrealized; fees excluded"
             />
             <MetricCard
               icon={<Activity className="h-4 w-4 text-muted-foreground" />}
@@ -1976,8 +1930,8 @@ export function PerformanceClient({
             <div className="rounded border border-border/40 bg-card/20 p-3">
               <div className="uppercase tracking-widest text-muted-foreground mb-1">Taker Activity</div>
               <div className="text-foreground">
-                fills: {data.taker.fillCount}, closed: {data.taker.closedPositions}, open: {data.taker.openPositions}, win rate:{" "}
-                {formatPct(data.taker.winRate)}
+                fills: {data.taker.fillCount}, closed: {data.taker.closedPositions}, open: {data.taker.openPositions},
+                win rate: {formatPct(data.taker.winRate)}
               </div>
             </div>
             <div className="rounded border border-border/40 bg-card/20 p-3">
@@ -1998,758 +1952,767 @@ export function PerformanceClient({
 
       {!showDiagnostics && (
         <div className="rounded border border-border/40 bg-card/20 p-3 text-[11px] font-mono text-muted-foreground">
-          Advanced diagnostics are hidden by default. Toggle <span className="text-foreground">Diagnostics On</span>{" "}
-          in the header to view edge map, horizon comparisons, calibration, and doctor-style debug panels.
+          Advanced diagnostics are hidden by default. Toggle <span className="text-foreground">Diagnostics On</span> in
+          the header to view edge map, horizon comparisons, calibration, and doctor-style debug panels.
         </div>
       )}
 
       {showDiagnostics && (
         <>
-      <DecisionFunnel />
+          <DecisionFunnel />
 
-      {/* What we know so far — Works / Doesn't / Unclear / Killed ideas */}
-      <Card className="bg-card/30 border-border/40 backdrop-blur-sm">
-        <CardHeader className="border-b border-border/40 pb-3">
-          <div className="flex items-center gap-2">
-            <BookOpen className="h-4 w-4 text-muted-foreground" />
-            <CardTitle className="text-lg font-bold tracking-tight">What we know so far</CardTitle>
-          </div>
-          <p className="text-[10px] text-muted-foreground font-mono uppercase tracking-widest mt-1">
-            Evidence-linked conclusions. Confidence + scope per row.
-          </p>
-        </CardHeader>
-        <CardContent className="p-6">
-          {ledgerLoading && !ledgerEntries ? (
-            <div className="text-[10px] font-mono text-muted-foreground">Loading…</div>
-          ) : ledgerEntries?.length ? (
-            <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
-              {(["works", "doesnt", "inconclusive", "killed"] as const).map((verdict) => {
-                const items = ledgerEntries.filter((e) => e.verdict === verdict);
-                if (items.length === 0) return null;
-                const title =
-                  verdict === "works"
-                    ? "Works"
-                    : verdict === "doesnt"
-                      ? "Doesn't"
-                      : verdict === "killed"
-                        ? "Killed ideas"
-                        : "Unclear";
-                const Icon =
-                  verdict === "works"
-                    ? CheckCircle2
-                    : verdict === "doesnt"
-                      ? XCircle
-                      : verdict === "killed"
-                        ? Ban
-                        : HelpCircle;
-                const iconColor =
-                  verdict === "works"
-                    ? "text-neon-green"
-                    : verdict === "doesnt"
-                      ? "text-rose-500"
-                      : verdict === "killed"
-                        ? "text-muted-foreground"
-                        : "text-muted-foreground";
-                return (
-                  <div key={verdict} className="space-y-2">
-                    <div className={cn("flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-widest", iconColor)}>
-                      <Icon className="h-3.5 w-3.5" />
-                      {title}
-                    </div>
-                    <ul className="space-y-2">
-                      {items.map((e) => (
-                        <li
-                          key={e.id}
-                          className="rounded border border-border/40 bg-card/20 p-2 text-[10px] font-mono"
-                        >
-                          <div className="text-foreground">{e.hypothesis}</div>
-                          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                            {e.confidence && (
-                              <span className="rounded bg-muted/60 px-1 py-0.5 text-[9px] uppercase">
-                                {e.confidence}
-                              </span>
-                            )}
-                            {e.scope && (
-                              <span className="rounded border border-border/40 px-1 py-0.5 text-[9px] text-muted-foreground">
-                                {e.scope}
-                              </span>
-                            )}
-                            <span
-                              className="font-mono text-muted-foreground"
-                              title="Experiment ID (copy)"
-                            >
-                              {e.runId}
-                            </span>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="text-[10px] font-mono text-muted-foreground">No ledger entries</div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Shadow KPI (lane) — unified card with lane selector, default Policy v0 */}
-      <Card className="bg-card/30 border-neon-green/20 backdrop-blur-sm">
-        <CardHeader className="border-b border-border/40 pb-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <BarChart3 className="h-4 w-4 text-muted-foreground" />
-            <CardTitle className="text-lg font-bold tracking-tight">Shadow KPI (lane)</CardTitle>
-            <div className="inline-flex rounded-sm border border-border/50 bg-card/40 p-0.5 ml-auto">
-              {(["policy_v0", "all"] as const).map((lane) => (
-                <button
-                  key={lane}
-                  onClick={() => setSelectedLane(lane)}
-                  className={cn(
-                    "px-2 py-1 text-[10px] font-mono uppercase tracking-widest rounded-sm transition-colors",
-                    selectedLane === lane
-                      ? "bg-neon-green/10 text-neon-green border border-neon-green/30"
-                      : "text-muted-foreground hover:text-foreground"
-                  )}
-                >
-                  {lane === "policy_v0" ? "Policy v0" : "All"}
-                </button>
-              ))}
-            </div>
-          </div>
-          <p className="text-[10px] text-muted-foreground font-mono uppercase tracking-widest mt-1">
-            {selectedLane === "policy_v0"
-              ? "maker-in · maker-out · horizon=" + defaultHorizon
-              : `EV_bps @ ${defaultHorizon}, expected $/day, inventory time, open positions, p95 drawdown proxy`}
-          </p>
-          {laneKpi?.updatedAt != null && (
-            <p className="text-[10px] font-mono text-muted-foreground mt-1">
-              Updated at {formatUpdated(laneKpi.updatedAt)}
-            </p>
-          )}
-        </CardHeader>
-        <CardContent className="p-6">
-          {laneKpiLoading && !laneKpi ? (
-            <div className="text-[10px] font-mono text-muted-foreground">Loading…</div>
-          ) : laneKpi ? (
-            <div className="space-y-4">
-              {laneKpi.status === "error" && laneKpi.error && (
-                <div className="rounded border border-rose-500/50 bg-rose-500/10 p-3 text-[10px] font-mono">
-                  <span className="font-bold text-rose-500">{laneKpi.error.code}</span>: {laneKpi.error.message}
-                </div>
-              )}
-              {laneKpi.status === "empty" && laneKpi.emptyReason && (
-                <p className="text-muted-foreground font-medium text-sm">
-                  {laneKpi.emptyReason}
-                </p>
-              )}
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-4 text-[10px] font-mono">
-                <div>
-                  <div className="uppercase tracking-wider text-muted-foreground mb-1">N_cycles</div>
-                  <div
-                    className={cn(
-                      "font-bold",
-                      (laneKpi.nCycles ?? laneKpi.completedCycles ?? 0) < 50
-                        ? "text-muted-foreground"
-                        : "text-foreground"
-                    )}
-                  >
-                    {laneKpi.nCycles ?? laneKpi.completedCycles ?? 0}
-                  </div>
-                </div>
-                <div>
-                  <div className="uppercase tracking-wider text-muted-foreground mb-1">N_fills</div>
-                  <div className="font-bold text-foreground">{laneKpi.nFills ?? laneKpi.diagnostics?.laneRows ?? "—"}</div>
-                </div>
-                <div>
-                  <div className="uppercase tracking-wider text-muted-foreground mb-1">N_markouts</div>
-                  <div className="font-bold text-foreground">{laneKpi.nMarkouts ?? laneKpi.diagnostics?.markoutRows ?? "—"}</div>
-                </div>
-                <div>
-                  <div className="uppercase tracking-wider text-muted-foreground mb-1">EV_bps</div>
-                  <div
-                    className={cn(
-                      "font-bold",
-                      (laneKpi.evBps ?? laneKpi.evBps10m ?? 0) >= 0 ? "text-neon-green" : "text-rose-500",
-                      (laneKpi.nCycles ?? laneKpi.completedCycles ?? 0) < 50 && "ring-1 ring-border rounded px-1"
-                    )}
-                  >
-                    {(laneKpi.evBps ?? laneKpi.evBps10m) != null
-                      ? laneKpi.evBpsCiLo != null && laneKpi.evBpsCiHi != null
-                        ? `${(laneKpi.evBps ?? laneKpi.evBps10m)!.toFixed(2)} bps [${laneKpi.evBpsCiLo.toFixed(2)}, ${laneKpi.evBpsCiHi.toFixed(2)}]`
-                        : `${(laneKpi.evBps ?? laneKpi.evBps10m)!.toFixed(2)} bps`
-                      : "—"}
-                  </div>
-                  {(laneKpi.ciBasis ?? "markouts") && (
-                    <div className="text-[9px] text-muted-foreground mt-0.5">
-                      CI basis: {laneKpi.ciBasis ?? "markouts"}
-                    </div>
-                  )}
-                </div>
-                <div>
-                  <div className="uppercase tracking-wider text-muted-foreground mb-1">Expected $/day</div>
-                  <div
-                    className={cn(
-                      "font-bold",
-                      (laneKpi.expectedDollarsPerDay ?? 0) >= 0 ? "text-neon-green" : "text-rose-500"
-                    )}
-                  >
-                    {laneKpi.expectedDollarsPerDay != null
-                      ? `$${laneKpi.expectedDollarsPerDay.toFixed(2)}`
-                      : "—"}
-                  </div>
-                </div>
-                <div>
-                  <div className="uppercase tracking-wider text-muted-foreground mb-1">Med time (min)</div>
-                  <div className="font-bold text-foreground">
-                    {laneKpi.medianTimeInInventoryMs != null
-                      ? (laneKpi.medianTimeInInventoryMs / 60_000).toFixed(1)
-                      : "—"}
-                  </div>
-                </div>
-                <div>
-                  <div className="uppercase tracking-wider text-muted-foreground mb-1">p90 time (min)</div>
-                  <div className="font-bold text-foreground">
-                    {laneKpi.p90TimeInInventoryMs != null
-                      ? (laneKpi.p90TimeInInventoryMs / 60_000).toFixed(1)
-                      : "—"}
-                  </div>
-                </div>
-                <div>
-                  <div className="uppercase tracking-wider text-muted-foreground mb-1">Open positions</div>
-                  <div className="font-bold text-foreground">{laneKpi.openPositionsCount}</div>
-                </div>
-                <div>
-                  <div className="uppercase tracking-wider text-muted-foreground mb-1">p95 drawdown (bps)</div>
-                  <div
-                    className={cn(
-                      "font-bold",
-                      (laneKpi.p95DrawdownProxyBps ?? 0) <= 0 ? "text-rose-500" : "text-foreground"
-                    )}
-                  >
-                    {laneKpi.p95DrawdownProxyBps != null ? laneKpi.p95DrawdownProxyBps.toFixed(1) : "—"}
-                  </div>
-                </div>
+          {/* What we know so far — Works / Doesn't / Unclear / Killed ideas */}
+          <Card className="bg-card/30 border-border/40 backdrop-blur-sm">
+            <CardHeader className="border-b border-border/40 pb-3">
+              <div className="flex items-center gap-2">
+                <BookOpen className="h-4 w-4 text-muted-foreground" />
+                <CardTitle className="text-lg font-bold tracking-tight">What we know so far</CardTitle>
               </div>
-              {((laneKpi.nCycles ?? laneKpi.completedCycles ?? 0) < 5 ||
-                (laneKpi.nCycles ?? laneKpi.completedCycles ?? 0) < 50) && (
-                <p className="text-muted-foreground font-medium text-sm">
-                  {(laneKpi.nCycles ?? laneKpi.completedCycles ?? 0) < 50
-                    ? "N_cycles &lt; 50: CI may be optimistic; cycle-level CI used when available."
-                    : "Evidence weak (N_cycles &lt; 5); keep running."}
-                </p>
-              )}
-            </div>
-          ) : (
-            <div className="text-[10px] font-mono text-muted-foreground">No lane KPI data</div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Horizon comparison */}
-      <Card className="bg-card/30 border-border/40 backdrop-blur-sm">
-        <CardHeader className="border-b border-border/40 pb-3">
-          <div className="flex items-center gap-2">
-            <Layers className="h-4 w-4 text-muted-foreground" />
-            <CardTitle className="text-lg font-bold tracking-tight">Horizon comparison</CardTitle>
-          </div>
-          <p className="text-[10px] text-muted-foreground font-mono uppercase tracking-widest mt-1">
-            Longer horizon ≠ more profits. Compare N and CI to distinguish noise from edge decay.
-          </p>
-        </CardHeader>
-        <CardContent className="p-6">
-          {multiHorizonLoading && !multiHorizonKpi ? (
-            <div className="text-[10px] font-mono text-muted-foreground">Loading…</div>
-          ) : multiHorizonKpi?.horizons?.length ? (
-            <div className="space-y-3">
-              <div className="overflow-x-auto">
-                <table className="w-full text-[10px] font-mono border-collapse">
-                  <thead>
-                    <tr className="text-ink/60 uppercase tracking-tighter border-b border-border/40">
-                      <th className="text-left py-2 pr-4">Horizon</th>
-                      <th className="text-right py-2 pr-4">N_cycles</th>
-                      <th className="text-right py-2 pr-4">N_fills</th>
-                      <th className="text-right py-2 pr-4">N_markouts</th>
-                      <th className="text-right py-2 pr-4">EV_bps [CI]</th>
-                      <th className="text-right py-2 pr-4">$/day</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {multiHorizonKpi.horizons.map((h) => {
-                      const nCycles = h.nCycles ?? h.completedCycles ?? 0;
-                      const lowN = nCycles < 50;
-                      return (
-                        <tr
-                          key={h.horizonMs}
+              <p className="text-[10px] text-muted-foreground font-mono uppercase tracking-widest mt-1">
+                Evidence-linked conclusions. Confidence + scope per row.
+              </p>
+            </CardHeader>
+            <CardContent className="p-6">
+              {ledgerLoading && !ledgerEntries ? (
+                <div className="text-[10px] font-mono text-muted-foreground">Loading…</div>
+              ) : ledgerEntries?.length ? (
+                <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
+                  {(["works", "doesnt", "inconclusive", "killed"] as const).map((verdict) => {
+                    const items = ledgerEntries.filter((e) => e.verdict === verdict);
+                    if (items.length === 0) return null;
+                    const title =
+                      verdict === "works"
+                        ? "Works"
+                        : verdict === "doesnt"
+                          ? "Doesn't"
+                          : verdict === "killed"
+                            ? "Killed ideas"
+                            : "Unclear";
+                    const Icon =
+                      verdict === "works"
+                        ? CheckCircle2
+                        : verdict === "doesnt"
+                          ? XCircle
+                          : verdict === "killed"
+                            ? Ban
+                            : HelpCircle;
+                    const iconColor =
+                      verdict === "works"
+                        ? "text-neon-green"
+                        : verdict === "doesnt"
+                          ? "text-rose-500"
+                          : verdict === "killed"
+                            ? "text-muted-foreground"
+                            : "text-muted-foreground";
+                    return (
+                      <div key={verdict} className="space-y-2">
+                        <div
                           className={cn(
-                            "border-b border-border/20",
-                            lowN && "bg-muted/20"
+                            "flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-widest",
+                            iconColor
                           )}
                         >
-                          <td className="py-2 pr-4 font-medium">{h.horizonLabel}</td>
-                          <td
-                            className={cn(
-                              "text-right py-2 pr-4",
-                              lowN && "text-muted-foreground font-medium"
-                            )}
+                          <Icon className="h-3.5 w-3.5" />
+                          {title}
+                        </div>
+                        <ul className="space-y-2">
+                          {items.map((e) => (
+                            <li
+                              key={e.id}
+                              className="rounded border border-border/40 bg-card/20 p-2 text-[10px] font-mono"
+                            >
+                              <div className="text-foreground">{e.hypothesis}</div>
+                              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                                {e.confidence && (
+                                  <span className="rounded bg-muted/60 px-1 py-0.5 text-[9px] uppercase">
+                                    {e.confidence}
+                                  </span>
+                                )}
+                                {e.scope && (
+                                  <span className="rounded border border-border/40 px-1 py-0.5 text-[9px] text-muted-foreground">
+                                    {e.scope}
+                                  </span>
+                                )}
+                                <span className="font-mono text-muted-foreground" title="Experiment ID (copy)">
+                                  {e.runId}
+                                </span>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="text-[10px] font-mono text-muted-foreground">No ledger entries</div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Shadow KPI (lane) — unified card with lane selector, default Policy v0 */}
+          <Card className="bg-card/30 border-neon-green/20 backdrop-blur-sm">
+            <CardHeader className="border-b border-border/40 pb-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <BarChart3 className="h-4 w-4 text-muted-foreground" />
+                <CardTitle className="text-lg font-bold tracking-tight">Shadow KPI (lane)</CardTitle>
+                <div className="inline-flex rounded-sm border border-border/50 bg-card/40 p-0.5 ml-auto">
+                  {(["policy_v0", "all"] as const).map((lane) => (
+                    <button
+                      key={lane}
+                      onClick={() => setSelectedLane(lane)}
+                      className={cn(
+                        "px-2 py-1 text-[10px] font-mono uppercase tracking-widest rounded-sm transition-colors",
+                        selectedLane === lane
+                          ? "bg-neon-green/10 text-neon-green border border-neon-green/30"
+                          : "text-muted-foreground hover:text-foreground"
+                      )}
+                    >
+                      {lane === "policy_v0" ? "Policy v0" : "All"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <p className="text-[10px] text-muted-foreground font-mono uppercase tracking-widest mt-1">
+                {selectedLane === "policy_v0"
+                  ? "maker-in · maker-out · horizon=" + defaultHorizon
+                  : `EV_bps @ ${defaultHorizon}, expected $/day, inventory time, open positions, p95 drawdown proxy`}
+              </p>
+              {laneKpi?.updatedAt != null && (
+                <p className="text-[10px] font-mono text-muted-foreground mt-1">
+                  Updated at {formatUpdated(laneKpi.updatedAt)}
+                </p>
+              )}
+            </CardHeader>
+            <CardContent className="p-6">
+              {laneKpiLoading && !laneKpi ? (
+                <div className="text-[10px] font-mono text-muted-foreground">Loading…</div>
+              ) : laneKpi ? (
+                <div className="space-y-4">
+                  {laneKpi.status === "error" && laneKpi.error && (
+                    <div className="rounded border border-rose-500/50 bg-rose-500/10 p-3 text-[10px] font-mono">
+                      <span className="font-bold text-rose-500">{laneKpi.error.code}</span>: {laneKpi.error.message}
+                    </div>
+                  )}
+                  {laneKpi.status === "empty" && laneKpi.emptyReason && (
+                    <p className="text-muted-foreground font-medium text-sm">{laneKpi.emptyReason}</p>
+                  )}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-4 text-[10px] font-mono">
+                    <div>
+                      <div className="uppercase tracking-wider text-muted-foreground mb-1">N_cycles</div>
+                      <div
+                        className={cn(
+                          "font-bold",
+                          (laneKpi.nCycles ?? laneKpi.completedCycles ?? 0) < 50
+                            ? "text-muted-foreground"
+                            : "text-foreground"
+                        )}
+                      >
+                        {laneKpi.nCycles ?? laneKpi.completedCycles ?? 0}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="uppercase tracking-wider text-muted-foreground mb-1">N_fills</div>
+                      <div className="font-bold text-foreground">
+                        {laneKpi.nFills ?? laneKpi.diagnostics?.laneRows ?? "—"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="uppercase tracking-wider text-muted-foreground mb-1">N_markouts</div>
+                      <div className="font-bold text-foreground">
+                        {laneKpi.nMarkouts ?? laneKpi.diagnostics?.markoutRows ?? "—"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="uppercase tracking-wider text-muted-foreground mb-1">EV_bps</div>
+                      <div
+                        className={cn(
+                          "font-bold",
+                          (laneKpi.evBps ?? laneKpi.evBps10m ?? 0) >= 0 ? "text-neon-green" : "text-rose-500",
+                          (laneKpi.nCycles ?? laneKpi.completedCycles ?? 0) < 50 && "ring-1 ring-border rounded px-1"
+                        )}
+                      >
+                        {(laneKpi.evBps ?? laneKpi.evBps10m) != null
+                          ? laneKpi.evBpsCiLo != null && laneKpi.evBpsCiHi != null
+                            ? `${(laneKpi.evBps ?? laneKpi.evBps10m)!.toFixed(2)} bps [${laneKpi.evBpsCiLo.toFixed(2)}, ${laneKpi.evBpsCiHi.toFixed(2)}]`
+                            : `${(laneKpi.evBps ?? laneKpi.evBps10m)!.toFixed(2)} bps`
+                          : "—"}
+                      </div>
+                      {(laneKpi.ciBasis ?? "markouts") && (
+                        <div className="text-[9px] text-muted-foreground mt-0.5">
+                          CI basis: {laneKpi.ciBasis ?? "markouts"}
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <div className="uppercase tracking-wider text-muted-foreground mb-1">Expected $/day</div>
+                      <div
+                        className={cn(
+                          "font-bold",
+                          (laneKpi.expectedDollarsPerDay ?? 0) >= 0 ? "text-neon-green" : "text-rose-500"
+                        )}
+                      >
+                        {laneKpi.expectedDollarsPerDay != null ? `$${laneKpi.expectedDollarsPerDay.toFixed(2)}` : "—"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="uppercase tracking-wider text-muted-foreground mb-1">Med time (min)</div>
+                      <div className="font-bold text-foreground">
+                        {laneKpi.medianTimeInInventoryMs != null
+                          ? (laneKpi.medianTimeInInventoryMs / 60_000).toFixed(1)
+                          : "—"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="uppercase tracking-wider text-muted-foreground mb-1">p90 time (min)</div>
+                      <div className="font-bold text-foreground">
+                        {laneKpi.p90TimeInInventoryMs != null
+                          ? (laneKpi.p90TimeInInventoryMs / 60_000).toFixed(1)
+                          : "—"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="uppercase tracking-wider text-muted-foreground mb-1">Open positions</div>
+                      <div className="font-bold text-foreground">{laneKpi.openPositionsCount}</div>
+                    </div>
+                    <div>
+                      <div className="uppercase tracking-wider text-muted-foreground mb-1">p95 drawdown (bps)</div>
+                      <div
+                        className={cn(
+                          "font-bold",
+                          (laneKpi.p95DrawdownProxyBps ?? 0) <= 0 ? "text-rose-500" : "text-foreground"
+                        )}
+                      >
+                        {laneKpi.p95DrawdownProxyBps != null ? laneKpi.p95DrawdownProxyBps.toFixed(1) : "—"}
+                      </div>
+                    </div>
+                  </div>
+                  {((laneKpi.nCycles ?? laneKpi.completedCycles ?? 0) < 5 ||
+                    (laneKpi.nCycles ?? laneKpi.completedCycles ?? 0) < 50) && (
+                    <p className="text-muted-foreground font-medium text-sm">
+                      {(laneKpi.nCycles ?? laneKpi.completedCycles ?? 0) < 50
+                        ? "N_cycles &lt; 50: CI may be optimistic; cycle-level CI used when available."
+                        : "Evidence weak (N_cycles &lt; 5); keep running."}
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <div className="text-[10px] font-mono text-muted-foreground">No lane KPI data</div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Horizon comparison */}
+          <Card className="bg-card/30 border-border/40 backdrop-blur-sm">
+            <CardHeader className="border-b border-border/40 pb-3">
+              <div className="flex items-center gap-2">
+                <Layers className="h-4 w-4 text-muted-foreground" />
+                <CardTitle className="text-lg font-bold tracking-tight">Horizon comparison</CardTitle>
+              </div>
+              <p className="text-[10px] text-muted-foreground font-mono uppercase tracking-widest mt-1">
+                Longer horizon ≠ more profits. Compare N and CI to distinguish noise from edge decay.
+              </p>
+            </CardHeader>
+            <CardContent className="p-6">
+              {multiHorizonLoading && !multiHorizonKpi ? (
+                <div className="text-[10px] font-mono text-muted-foreground">Loading…</div>
+              ) : multiHorizonKpi?.horizons?.length ? (
+                <div className="space-y-3">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[10px] font-mono border-collapse">
+                      <thead>
+                        <tr className="text-ink/60 uppercase tracking-tighter border-b border-border/40">
+                          <th className="text-left py-2 pr-4">Horizon</th>
+                          <th className="text-right py-2 pr-4">N_cycles</th>
+                          <th className="text-right py-2 pr-4">N_fills</th>
+                          <th className="text-right py-2 pr-4">N_markouts</th>
+                          <th className="text-right py-2 pr-4">EV_bps [CI]</th>
+                          <th className="text-right py-2 pr-4">$/day</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {multiHorizonKpi.horizons.map((h) => {
+                          const nCycles = h.nCycles ?? h.completedCycles ?? 0;
+                          const lowN = nCycles < 50;
+                          return (
+                            <tr key={h.horizonMs} className={cn("border-b border-border/20", lowN && "bg-muted/20")}>
+                              <td className="py-2 pr-4 font-medium">{h.horizonLabel}</td>
+                              <td className={cn("text-right py-2 pr-4", lowN && "text-muted-foreground font-medium")}>
+                                {nCycles}
+                              </td>
+                              <td className="text-right py-2 pr-4">{h.nFills ?? "—"}</td>
+                              <td className="text-right py-2 pr-4">{h.nMarkouts ?? h.markoutRows ?? "—"}</td>
+                              <td className="text-right py-2 pr-4">
+                                <span
+                                  className={cn(
+                                    (h.evBps ?? 0) >= 0 ? "text-neon-green" : "text-rose-500",
+                                    lowN && "ring-1 ring-border rounded px-1"
+                                  )}
+                                >
+                                  {h.evBps != null
+                                    ? h.evBpsCiLo != null && h.evBpsCiHi != null
+                                      ? `${h.evBps.toFixed(2)} [${h.evBpsCiLo.toFixed(2)}, ${h.evBpsCiHi.toFixed(2)}]`
+                                      : `${h.evBps.toFixed(2)} bps`
+                                    : "—"}
+                                </span>
+                                {h.ciBasis && (
+                                  <span className="block text-[9px] text-muted-foreground">CI: {h.ciBasis}</span>
+                                )}
+                              </td>
+                              <td
+                                className={cn(
+                                  "text-right py-2 pr-4",
+                                  (h.expectedDollarsPerDay ?? 0) >= 0 ? "text-neon-green" : "text-rose-500"
+                                )}
+                              >
+                                {h.expectedDollarsPerDay != null ? `$${h.expectedDollarsPerDay.toFixed(2)}` : "—"}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-[10px] font-mono text-muted-foreground">No horizon comparison data</div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Edge Map — lane × bucket × horizon, one query */}
+          <Card className="bg-card/30 border-border/40 backdrop-blur-sm">
+            <CardHeader className="border-b border-border/40 pb-3">
+              <div className="flex items-center gap-2">
+                <Layers className="h-4 w-4 text-muted-foreground" />
+                <CardTitle className="text-lg font-bold tracking-tight">Edge Map</CardTitle>
+              </div>
+              <p className="text-[10px] text-muted-foreground font-mono uppercase tracking-widest mt-1">
+                Lane × spread bucket × horizon. N_cycles, N_fills, N_markouts; CI basis; warning when N_cycles &lt; 50.
+              </p>
+            </CardHeader>
+            <CardContent className="p-6">
+              {edgeMapLoading && !edgeMapCells ? (
+                <div className="text-[10px] font-mono text-muted-foreground">Loading…</div>
+              ) : edgeMapCells?.length ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[10px] font-mono border-collapse">
+                    <thead>
+                      <tr className="text-ink/60 uppercase tracking-tighter border-b border-border/40">
+                        <th className="text-left py-2 pr-4">Lane</th>
+                        <th className="text-left py-2 pr-4">Bucket</th>
+                        <th className="text-left py-2 pr-4">Horizon</th>
+                        <th className="text-right py-2 pr-4">N_cycles</th>
+                        <th className="text-right py-2 pr-4">N_fills</th>
+                        <th className="text-right py-2 pr-4">N_markouts</th>
+                        <th className="text-right py-2 pr-4">EV_bps [CI]</th>
+                        <th className="text-right py-2 pr-4">$/day</th>
+                        <th className="text-right py-2 pr-4">Med (min)</th>
+                        <th className="text-right py-2">p95 (bps)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {edgeMapCells.map((c) => {
+                        const lowN = c.nCycles < 50;
+                        return (
+                          <tr
+                            key={`${c.lane}-${c.bucket}-${c.horizonMs}`}
+                            className={cn("border-b border-border/20", lowN && "bg-muted/20")}
                           >
-                            {nCycles}
-                          </td>
-                          <td className="text-right py-2 pr-4">{h.nFills ?? "—"}</td>
-                          <td className="text-right py-2 pr-4">{h.nMarkouts ?? h.markoutRows ?? "—"}</td>
-                          <td className="text-right py-2 pr-4">
-                            <span
+                            <td className="py-2 pr-4 font-medium">{c.lane}</td>
+                            <td className="py-2 pr-4">{c.bucket}</td>
+                            <td className="py-2 pr-4">{c.horizonLabel}</td>
+                            <td className={cn("text-right py-2 pr-4", lowN && "text-muted-foreground font-medium")}>
+                              {c.nCycles}
+                            </td>
+                            <td className="text-right py-2 pr-4">{c.nFills}</td>
+                            <td className="text-right py-2 pr-4">{c.nMarkouts}</td>
+                            <td className="text-right py-2 pr-4">
+                              <span
+                                className={cn(
+                                  (c.evBps ?? 0) >= 0 ? "text-neon-green" : "text-rose-500",
+                                  lowN && "ring-1 ring-border rounded px-1"
+                                )}
+                              >
+                                {c.evBps != null
+                                  ? c.evBpsCiLo != null && c.evBpsCiHi != null
+                                    ? `${c.evBps.toFixed(2)} [${c.evBpsCiLo.toFixed(2)}, ${c.evBpsCiHi.toFixed(2)}]`
+                                    : `${c.evBps.toFixed(2)} bps`
+                                  : "—"}
+                              </span>
+                              {c.ciBasis && (
+                                <span className="block text-[9px] text-muted-foreground">CI: {c.ciBasis}</span>
+                              )}
+                            </td>
+                            <td
                               className={cn(
-                                (h.evBps ?? 0) >= 0 ? "text-neon-green" : "text-rose-500",
-                                lowN && "ring-1 ring-border rounded px-1"
+                                "text-right py-2 pr-4",
+                                (c.expectedDollarsPerDay ?? 0) >= 0 ? "text-neon-green" : "text-rose-500"
                               )}
                             >
-                              {h.evBps != null
-                                ? h.evBpsCiLo != null && h.evBpsCiHi != null
-                                  ? `${h.evBps.toFixed(2)} [${h.evBpsCiLo.toFixed(2)}, ${h.evBpsCiHi.toFixed(2)}]`
-                                  : `${h.evBps.toFixed(2)} bps`
-                                : "—"}
-                            </span>
-                            {h.ciBasis && (
-                              <span className="block text-[9px] text-muted-foreground">CI: {h.ciBasis}</span>
-                            )}
-                          </td>
-                          <td
-                            className={cn(
-                              "text-right py-2 pr-4",
-                              (h.expectedDollarsPerDay ?? 0) >= 0 ? "text-neon-green" : "text-rose-500"
-                            )}
-                          >
-                            {h.expectedDollarsPerDay != null
-                              ? `$${h.expectedDollarsPerDay.toFixed(2)}`
-                              : "—"}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          ) : (
-            <div className="text-[10px] font-mono text-muted-foreground">No horizon comparison data</div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Edge Map — lane × bucket × horizon, one query */}
-      <Card className="bg-card/30 border-border/40 backdrop-blur-sm">
-        <CardHeader className="border-b border-border/40 pb-3">
-          <div className="flex items-center gap-2">
-            <Layers className="h-4 w-4 text-muted-foreground" />
-            <CardTitle className="text-lg font-bold tracking-tight">Edge Map</CardTitle>
-          </div>
-          <p className="text-[10px] text-muted-foreground font-mono uppercase tracking-widest mt-1">
-            Lane × spread bucket × horizon. N_cycles, N_fills, N_markouts; CI basis; warning when N_cycles &lt; 50.
-          </p>
-        </CardHeader>
-        <CardContent className="p-6">
-          {edgeMapLoading && !edgeMapCells ? (
-            <div className="text-[10px] font-mono text-muted-foreground">Loading…</div>
-          ) : edgeMapCells?.length ? (
-            <div className="overflow-x-auto">
-              <table className="w-full text-[10px] font-mono border-collapse">
-                <thead>
-                  <tr className="text-ink/60 uppercase tracking-tighter border-b border-border/40">
-                    <th className="text-left py-2 pr-4">Lane</th>
-                    <th className="text-left py-2 pr-4">Bucket</th>
-                    <th className="text-left py-2 pr-4">Horizon</th>
-                    <th className="text-right py-2 pr-4">N_cycles</th>
-                    <th className="text-right py-2 pr-4">N_fills</th>
-                    <th className="text-right py-2 pr-4">N_markouts</th>
-                    <th className="text-right py-2 pr-4">EV_bps [CI]</th>
-                    <th className="text-right py-2 pr-4">$/day</th>
-                    <th className="text-right py-2 pr-4">Med (min)</th>
-                    <th className="text-right py-2">p95 (bps)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {edgeMapCells.map((c) => {
-                    const lowN = c.nCycles < 50;
-                    return (
-                      <tr
-                        key={`${c.lane}-${c.bucket}-${c.horizonMs}`}
-                        className={cn(
-                          "border-b border-border/20",
-                          lowN && "bg-muted/20"
-                        )}
-                      >
-                        <td className="py-2 pr-4 font-medium">{c.lane}</td>
-                        <td className="py-2 pr-4">{c.bucket}</td>
-                        <td className="py-2 pr-4">{c.horizonLabel}</td>
-                        <td
-                          className={cn(
-                            "text-right py-2 pr-4",
-                            lowN && "text-muted-foreground font-medium"
-                          )}
-                        >
-                          {c.nCycles}
-                        </td>
-                        <td className="text-right py-2 pr-4">{c.nFills}</td>
-                        <td className="text-right py-2 pr-4">{c.nMarkouts}</td>
-                        <td className="text-right py-2 pr-4">
-                          <span
-                            className={cn(
-                              (c.evBps ?? 0) >= 0 ? "text-neon-green" : "text-rose-500",
-                              lowN && "ring-1 ring-border rounded px-1"
-                            )}
-                          >
-                            {c.evBps != null
-                              ? c.evBpsCiLo != null && c.evBpsCiHi != null
-                                ? `${c.evBps.toFixed(2)} [${c.evBpsCiLo.toFixed(2)}, ${c.evBpsCiHi.toFixed(2)}]`
-                                : `${c.evBps.toFixed(2)} bps`
-                              : "—"}
-                          </span>
-                          {c.ciBasis && (
-                            <span className="block text-[9px] text-muted-foreground">CI: {c.ciBasis}</span>
-                          )}
-                        </td>
-                        <td
-                          className={cn(
-                            "text-right py-2 pr-4",
-                            (c.expectedDollarsPerDay ?? 0) >= 0 ? "text-neon-green" : "text-rose-500"
-                          )}
-                        >
-                          {c.expectedDollarsPerDay != null
-                            ? `$${c.expectedDollarsPerDay.toFixed(2)}`
-                            : "—"}
-                        </td>
-                        <td className="text-right py-2 pr-4">
-                          {c.medianHoldMs != null ? (c.medianHoldMs / 60_000).toFixed(1) : "—"}
-                        </td>
-                        <td className="text-right py-2">
-                          {c.p95DrawdownBps != null ? c.p95DrawdownBps.toFixed(1) : "—"}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="text-[10px] font-mono text-muted-foreground">No edge map data</div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Time trend (same horizon over time) */}
-      <Card className="bg-card/30 border-border/40 backdrop-blur-sm">
-        <CardHeader className="border-b border-border/40 pb-3">
-          <div className="flex items-center gap-2">
-            <Timer className="h-4 w-4 text-muted-foreground" />
-            <CardTitle className="text-lg font-bold tracking-tight">Time trend (same horizon)</CardTitle>
-          </div>
-          <p className="text-[10px] text-muted-foreground font-mono uppercase tracking-widest mt-1">
-            Inching: same horizon over time. Horizon={defaultHorizon}.
-          </p>
-        </CardHeader>
-        <CardContent className="p-6">
-          {timeTrendLoading && !timeTrendKpi ? (
-            <div className="text-[10px] font-mono text-muted-foreground">Loading…</div>
-          ) : timeTrendKpi?.windows?.length ? (
-            <div className="overflow-x-auto">
-              <table className="w-full text-[10px] font-mono border-collapse">
-                <thead>
-                  <tr className="text-ink/60 uppercase tracking-tighter border-b border-border/40">
-                    <th className="text-left py-2 pr-4">Window</th>
-                    <th className="text-right py-2 pr-4">N_cycles</th>
-                    <th className="text-right py-2 pr-4">N_fills</th>
-                    <th className="text-right py-2 pr-4">N_markouts</th>
-                    <th className="text-right py-2 pr-4">EV_bps [CI]</th>
-                    <th className="text-right py-2">$/day</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {timeTrendKpi.windows.map((w) => {
-                    const nCycles = w.nCycles ?? 0;
-                    const lowN = nCycles < 50;
-                    return (
-                      <tr
-                        key={w.windowHours}
-                        className={cn(
-                          "border-b border-border/20",
-                          lowN && "bg-muted/20"
-                        )}
-                      >
-                        <td className="py-2 pr-4 font-medium">
-                          {w.windowHours}h
-                        </td>
-                        <td
-                          className={cn(
-                            "text-right py-2 pr-4",
-                            lowN && "text-muted-foreground font-medium"
-                          )}
-                        >
-                          {w.nCycles ?? "—"}
-                        </td>
-                        <td className="text-right py-2 pr-4">{w.nFills ?? "—"}</td>
-                        <td className="text-right py-2 pr-4">{w.nMarkouts ?? w.n ?? "—"}</td>
-                        <td className="text-right py-2 pr-4">
-                          <span
-                            className={cn(
-                              (w.evBps ?? 0) >= 0 ? "text-neon-green" : "text-rose-500",
-                              lowN && "ring-1 ring-border rounded px-1"
-                            )}
-                          >
-                            {w.evBps != null
-                              ? w.evBpsCiLo != null && w.evBpsCiHi != null
-                                ? `${w.evBps.toFixed(2)} [${w.evBpsCiLo.toFixed(2)}, ${w.evBpsCiHi.toFixed(2)}]`
-                                : `${w.evBps.toFixed(2)} bps`
-                              : "—"}
-                          </span>
-                          {w.ciBasis && (
-                            <span className="block text-[9px] text-muted-foreground">CI: {w.ciBasis}</span>
-                          )}
-                        </td>
-                        <td
-                          className={cn(
-                            "text-right py-2",
-                            (w.expectedDollarsPerDay ?? 0) >= 0 ? "text-neon-green" : "text-rose-500"
-                          )}
-                        >
-                          {w.expectedDollarsPerDay != null
-                            ? `$${w.expectedDollarsPerDay.toFixed(2)}`
-                            : "—"}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="text-[10px] font-mono text-muted-foreground">No time trend data</div>
-          )}
-        </CardContent>
-      </Card>
-
-      <ResearchPanel
-        wallets={wallets}
-        defaultHorizon={defaultHorizon}
-        onHorizonChange={handleHorizonChange}
-      />
-
-      {/* Edge Calibration (pred vs realized) */}
-      {edgeCalibration && (
-        <Card className="bg-card/30 border-border/40 backdrop-blur-sm">
-          <CardHeader className="border-b border-border/40 pb-3">
-            <div className="flex items-center gap-2">
-              <Target className="h-4 w-4 text-emerald-400" />
-              <CardTitle className="text-lg font-bold tracking-tight">Edge Calibration</CardTitle>
-            </div>
-            <p className="text-[10px] text-muted-foreground font-mono uppercase tracking-widest mt-1">
-              Predicted vs realized markout by net_edge_bps bucket ({defaultHorizon} horizon)
-            </p>
-          </CardHeader>
-          <CardContent className="p-6 space-y-6">
-            {edgeCalibration.diagnostics?.taker && (
-              <div className="text-[10px] font-mono rounded border border-border/40 p-3 bg-card/20">
-                <div className="uppercase tracking-wider text-ink/60 mb-2">Outcome coverage at horizon={defaultHorizon}</div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  <div>
-                    <span className="text-ink/60">fills_total</span>
-                    <div className="font-bold text-foreground">{edgeCalibration.diagnostics.taker.fills_total}</div>
-                  </div>
-                  <div>
-                    <span className="text-ink/60">fills_with_markout</span>
-                    <div className="font-bold text-foreground">{edgeCalibration.diagnostics.taker.fills_with_markout}</div>
-                  </div>
-                  <div>
-                    <span className="text-ink/60">fills_with_pred_edge</span>
-                    <div className="font-bold text-foreground">{edgeCalibration.diagnostics.taker.fills_with_pred_edge}</div>
-                  </div>
-                  <div>
-                    <span className="text-ink/60">fills_in_calibration</span>
-                    <div className="font-bold text-foreground">{edgeCalibration.diagnostics.taker.fills_in_calibration}</div>
-                  </div>
-                </div>
-              </div>
-            )}
-            <div className="grid gap-6 md:grid-cols-2">
-              <div className="space-y-3">
-                <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
-                  Taker Calibration
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-[10px] font-mono border-collapse">
-                    <thead>
-                      <tr className="text-ink/60 uppercase tracking-tighter">
-                        <th className="text-left py-2 pr-4">Bucket</th>
-                        <th className="text-right py-2 pr-4">Count</th>
-                        <th className="text-right py-2">Avg Realized</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {edgeCalibration.taker.buckets.map((b) => (
-                        <tr key={b.label} className="border-t border-border/20">
-                          <td className="py-2 pr-4">{b.label}</td>
-                          <td className="text-right py-2 pr-4">{b.count}</td>
-                          <td className={cn("text-right py-2", (b.avgRealizedMarkoutBps ?? 0) >= 0 ? "text-neon-green" : "text-rose-500")}>
-                            {b.avgRealizedMarkoutBps != null ? `${b.avgRealizedMarkoutBps.toFixed(2)} bps` : "—"}
-                          </td>
-                        </tr>
-                      ))}
+                              {c.expectedDollarsPerDay != null ? `$${c.expectedDollarsPerDay.toFixed(2)}` : "—"}
+                            </td>
+                            <td className="text-right py-2 pr-4">
+                              {c.medianHoldMs != null ? (c.medianHoldMs / 60_000).toFixed(1) : "—"}
+                            </td>
+                            <td className="text-right py-2">
+                              {c.p95DrawdownBps != null ? c.p95DrawdownBps.toFixed(1) : "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
-                <div className="text-[10px] font-mono pt-2 border-t border-border/20">
-                  Decomposition: pred {edgeCalibration.taker.decomposition.avgPredEdgeBps != null ? edgeCalibration.taker.decomposition.avgPredEdgeBps.toFixed(1) : "—"} bps
-                  {" → "}net {edgeCalibration.taker.decomposition.avgNetEdgeBps != null ? edgeCalibration.taker.decomposition.avgNetEdgeBps.toFixed(1) : "—"} bps
-                  {" → "}realized {edgeCalibration.taker.decomposition.avgRealizedMarkoutBps != null ? edgeCalibration.taker.decomposition.avgRealizedMarkoutBps.toFixed(1) : "—"} bps
-                  {" "}(n={edgeCalibration.taker.decomposition.fillCount})
-                </div>
+              ) : (
+                <div className="text-[10px] font-mono text-muted-foreground">No edge map data</div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Time trend (same horizon over time) */}
+          <Card className="bg-card/30 border-border/40 backdrop-blur-sm">
+            <CardHeader className="border-b border-border/40 pb-3">
+              <div className="flex items-center gap-2">
+                <Timer className="h-4 w-4 text-muted-foreground" />
+                <CardTitle className="text-lg font-bold tracking-tight">Time trend (same horizon)</CardTitle>
               </div>
-              <div className="space-y-3">
-                <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
-                  Maker Calibration
-                </div>
+              <p className="text-[10px] text-muted-foreground font-mono uppercase tracking-widest mt-1">
+                Inching: same horizon over time. Horizon={defaultHorizon}.
+              </p>
+            </CardHeader>
+            <CardContent className="p-6">
+              {timeTrendLoading && !timeTrendKpi ? (
+                <div className="text-[10px] font-mono text-muted-foreground">Loading…</div>
+              ) : timeTrendKpi?.windows?.length ? (
                 <div className="overflow-x-auto">
                   <table className="w-full text-[10px] font-mono border-collapse">
                     <thead>
-                      <tr className="text-ink/60 uppercase tracking-tighter">
-                        <th className="text-left py-2 pr-4">Bucket</th>
-                        <th className="text-right py-2 pr-4">Count</th>
-                        <th className="text-right py-2">Avg Realized</th>
+                      <tr className="text-ink/60 uppercase tracking-tighter border-b border-border/40">
+                        <th className="text-left py-2 pr-4">Window</th>
+                        <th className="text-right py-2 pr-4">N_cycles</th>
+                        <th className="text-right py-2 pr-4">N_fills</th>
+                        <th className="text-right py-2 pr-4">N_markouts</th>
+                        <th className="text-right py-2 pr-4">EV_bps [CI]</th>
+                        <th className="text-right py-2">$/day</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {edgeCalibration.maker.buckets.map((b) => (
-                        <tr key={b.label} className="border-t border-border/20">
-                          <td className="py-2 pr-4">{b.label}</td>
-                          <td className="text-right py-2 pr-4">{b.count}</td>
-                          <td className={cn("text-right py-2", (b.avgRealizedMarkoutBps ?? 0) >= 0 ? "text-neon-green" : "text-rose-500")}>
-                            {b.avgRealizedMarkoutBps != null ? `${b.avgRealizedMarkoutBps.toFixed(2)} bps` : "—"}
-                          </td>
-                        </tr>
-                      ))}
+                      {timeTrendKpi.windows.map((w) => {
+                        const nCycles = w.nCycles ?? 0;
+                        const lowN = nCycles < 50;
+                        return (
+                          <tr key={w.windowHours} className={cn("border-b border-border/20", lowN && "bg-muted/20")}>
+                            <td className="py-2 pr-4 font-medium">{w.windowHours}h</td>
+                            <td className={cn("text-right py-2 pr-4", lowN && "text-muted-foreground font-medium")}>
+                              {w.nCycles ?? "—"}
+                            </td>
+                            <td className="text-right py-2 pr-4">{w.nFills ?? "—"}</td>
+                            <td className="text-right py-2 pr-4">{w.nMarkouts ?? w.n ?? "—"}</td>
+                            <td className="text-right py-2 pr-4">
+                              <span
+                                className={cn(
+                                  (w.evBps ?? 0) >= 0 ? "text-neon-green" : "text-rose-500",
+                                  lowN && "ring-1 ring-border rounded px-1"
+                                )}
+                              >
+                                {w.evBps != null
+                                  ? w.evBpsCiLo != null && w.evBpsCiHi != null
+                                    ? `${w.evBps.toFixed(2)} [${w.evBpsCiLo.toFixed(2)}, ${w.evBpsCiHi.toFixed(2)}]`
+                                    : `${w.evBps.toFixed(2)} bps`
+                                  : "—"}
+                              </span>
+                              {w.ciBasis && (
+                                <span className="block text-[9px] text-muted-foreground">CI: {w.ciBasis}</span>
+                              )}
+                            </td>
+                            <td
+                              className={cn(
+                                "text-right py-2",
+                                (w.expectedDollarsPerDay ?? 0) >= 0 ? "text-neon-green" : "text-rose-500"
+                              )}
+                            >
+                              {w.expectedDollarsPerDay != null ? `$${w.expectedDollarsPerDay.toFixed(2)}` : "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
-                <div className="text-[10px] font-mono pt-2 border-t border-border/20">
-                  Decomposition: pred {edgeCalibration.maker.decomposition.avgPredEdgeBps != null ? edgeCalibration.maker.decomposition.avgPredEdgeBps.toFixed(1) : "—"} bps
-                  {" → "}net {edgeCalibration.maker.decomposition.avgNetEdgeBps != null ? edgeCalibration.maker.decomposition.avgNetEdgeBps.toFixed(1) : "—"} bps
-                  {" → "}realized {edgeCalibration.maker.decomposition.avgRealizedMarkoutBps != null ? edgeCalibration.maker.decomposition.avgRealizedMarkoutBps.toFixed(1) : "—"} bps
-                  {" "}(n={edgeCalibration.maker.decomposition.fillCount})
-                </div>
-              </div>
-            </div>
-            <div className="pt-4 border-t border-border/40 text-[10px] font-mono">
-              <span className="uppercase tracking-widest text-muted-foreground">Combined: </span>
-              Taker realized {edgeCalibration.combined.takerRealizedMarkoutBps != null ? edgeCalibration.combined.takerRealizedMarkoutBps.toFixed(1) : "—"} bps (n={edgeCalibration.combined.takerFills}, win {edgeCalibration.combined.takerWinRate.toFixed(1)}%)
-              {" · "}
-              Maker realized {edgeCalibration.combined.makerRealizedMarkoutBps != null ? edgeCalibration.combined.makerRealizedMarkoutBps.toFixed(1) : "—"} bps (n={edgeCalibration.combined.makerFills}, fill {edgeCalibration.combined.makerFillRate.toFixed(1)}%)
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Execution Quality Summary */}
-      <Card className="bg-card/30 border-border/40 backdrop-blur-sm">
-        <CardHeader className="border-b border-border/40 pb-3">
-          <div className="flex items-center gap-2">
-            <Activity className="h-4 w-4 text-emerald-400" />
-            <CardTitle className="text-lg font-bold tracking-tight">Execution Quality</CardTitle>
-          </div>
-          <p className="text-[10px] text-muted-foreground font-mono uppercase tracking-widest mt-1">
-            Shadow fill rates and markouts (last {shadow?.windowHours ?? 24}h)
-          </p>
-        </CardHeader>
-        <CardContent className="p-6 space-y-6">
-          {shadowLoading && <div className="text-xs text-muted-foreground">Loading…</div>}
-          {!shadowLoading && shadow && (
-            <div className="space-y-6">
-              {(viewMode === "maker" || viewMode === "all") && (
-                <div className="space-y-3">
-                  <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
-                    Maker (shadow)
-                  </div>
-                  <div className="grid gap-4 grid-cols-2 md:grid-cols-4">
-                    <MetricCard
-                      icon={<Percent className="h-4 w-4 text-muted-foreground" />}
-                      label="Fill Rate"
-                      value={formatFillRate(shadow.maker.fillRate)}
-                    />
-                    <MetricCard
-                      icon={<Timer className="h-4 w-4 text-muted-foreground" />}
-                      label="Markout 5s"
-                      value={formatBps(shadow.maker.markout5s)}
-                    />
-                    <MetricCard
-                      icon={<Timer className="h-4 w-4 text-muted-foreground" />}
-                      label="Markout 30s"
-                      value={formatBps(shadow.maker.markout30s)}
-                    />
-                    <MetricCard
-                      icon={<Activity className="h-4 w-4 text-muted-foreground" />}
-                      label="Fills"
-                      value={`${shadow.maker.fills.toLocaleString()}`}
-                    />
-                  </div>
-                  <div className="grid gap-4 grid-cols-2 md:grid-cols-3">
-                    <MetricCard
-                      icon={<Activity className="h-4 w-4 text-slate-400" />}
-                      label="Real fills"
-                      value={formatCount(shadow.maker.realFills)}
-                      helperText="Matched to live trades"
-                    />
-                    <MetricCard
-                      icon={<Activity className="h-4 w-4 text-muted-foreground" />}
-                      label="Synthetic fills"
-                      value={formatCount(shadow.maker.syntheticFills)}
-                      helperText="Generated when the feed is idle"
-                    />
-                    <MetricCard
-                      icon={<Percent className="h-4 w-4 text-muted-foreground" />}
-                      label="Synthetic ratio"
-                      value={formatRatio(shadow.maker.syntheticRatio)}
-                      helperText="Synthetic / total fills"
-                    />
-                  </div>
-                  <p className="text-xs text-muted-foreground font-mono">
-                    Synthetic fills keep the panel populated when the live trade feed is quiet;
-                    real fills back up the maker PnL when synthetic ratio is low.
-                  </p>
-                </div>
+              ) : (
+                <div className="text-[10px] font-mono text-muted-foreground">No time trend data</div>
               )}
+            </CardContent>
+          </Card>
 
-              {(viewMode === "taker" || viewMode === "all") && (
-                <div className="space-y-3">
-                  <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
-                    Taker (shadow)
+          <ResearchPanel wallets={wallets} defaultHorizon={defaultHorizon} onHorizonChange={handleHorizonChange} />
+
+          {/* Edge Calibration (pred vs realized) */}
+          {edgeCalibration && (
+            <Card className="bg-card/30 border-border/40 backdrop-blur-sm">
+              <CardHeader className="border-b border-border/40 pb-3">
+                <div className="flex items-center gap-2">
+                  <Target className="h-4 w-4 text-emerald-400" />
+                  <CardTitle className="text-lg font-bold tracking-tight">Edge Calibration</CardTitle>
+                </div>
+                <p className="text-[10px] text-muted-foreground font-mono uppercase tracking-widest mt-1">
+                  Predicted vs realized markout by net_edge_bps bucket ({defaultHorizon} horizon)
+                </p>
+              </CardHeader>
+              <CardContent className="p-6 space-y-6">
+                {edgeCalibration.diagnostics?.taker && (
+                  <div className="text-[10px] font-mono rounded border border-border/40 p-3 bg-card/20">
+                    <div className="uppercase tracking-wider text-ink/60 mb-2">
+                      Outcome coverage at horizon={defaultHorizon}
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                      <div>
+                        <span className="text-ink/60">fills_total</span>
+                        <div className="font-bold text-foreground">{edgeCalibration.diagnostics.taker.fills_total}</div>
+                      </div>
+                      <div>
+                        <span className="text-ink/60">fills_with_markout</span>
+                        <div className="font-bold text-foreground">
+                          {edgeCalibration.diagnostics.taker.fills_with_markout}
+                        </div>
+                      </div>
+                      <div>
+                        <span className="text-ink/60">fills_with_pred_edge</span>
+                        <div className="font-bold text-foreground">
+                          {edgeCalibration.diagnostics.taker.fills_with_pred_edge}
+                        </div>
+                      </div>
+                      <div>
+                        <span className="text-ink/60">fills_in_calibration</span>
+                        <div className="font-bold text-foreground">
+                          {edgeCalibration.diagnostics.taker.fills_in_calibration}
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                  <div className="grid gap-4 grid-cols-2 md:grid-cols-4">
-                    <MetricCard
-                      icon={<Percent className="h-4 w-4 text-muted-foreground" />}
-                      label="Fill Rate"
-                      value={formatFillRate(shadow.taker.fillRate)}
-                    />
-                    <MetricCard
-                      icon={<Timer className="h-4 w-4 text-muted-foreground" />}
-                      label="Markout 5s"
-                      value={formatBps(shadow.taker.markout5s)}
-                    />
-                    <MetricCard
-                      icon={<Timer className="h-4 w-4 text-muted-foreground" />}
-                      label="Markout 30s"
-                      value={formatBps(shadow.taker.markout30s)}
-                    />
-                    <MetricCard
-                      icon={<Activity className="h-4 w-4 text-muted-foreground" />}
-                      label="Fills"
-                      value={`${shadow.taker.fills.toLocaleString()}`}
-                    />
+                )}
+                <div className="grid gap-6 md:grid-cols-2">
+                  <div className="space-y-3">
+                    <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
+                      Taker Calibration
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-[10px] font-mono border-collapse">
+                        <thead>
+                          <tr className="text-ink/60 uppercase tracking-tighter">
+                            <th className="text-left py-2 pr-4">Bucket</th>
+                            <th className="text-right py-2 pr-4">Count</th>
+                            <th className="text-right py-2">Avg Realized</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {edgeCalibration.taker.buckets.map((b) => (
+                            <tr key={b.label} className="border-t border-border/20">
+                              <td className="py-2 pr-4">{b.label}</td>
+                              <td className="text-right py-2 pr-4">{b.count}</td>
+                              <td
+                                className={cn(
+                                  "text-right py-2",
+                                  (b.avgRealizedMarkoutBps ?? 0) >= 0 ? "text-neon-green" : "text-rose-500"
+                                )}
+                              >
+                                {b.avgRealizedMarkoutBps != null ? `${b.avgRealizedMarkoutBps.toFixed(2)} bps` : "—"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="text-[10px] font-mono pt-2 border-t border-border/20">
+                      Decomposition: pred{" "}
+                      {edgeCalibration.taker.decomposition.avgPredEdgeBps != null
+                        ? edgeCalibration.taker.decomposition.avgPredEdgeBps.toFixed(1)
+                        : "—"}{" "}
+                      bps
+                      {" → "}net{" "}
+                      {edgeCalibration.taker.decomposition.avgNetEdgeBps != null
+                        ? edgeCalibration.taker.decomposition.avgNetEdgeBps.toFixed(1)
+                        : "—"}{" "}
+                      bps
+                      {" → "}realized{" "}
+                      {edgeCalibration.taker.decomposition.avgRealizedMarkoutBps != null
+                        ? edgeCalibration.taker.decomposition.avgRealizedMarkoutBps.toFixed(1)
+                        : "—"}{" "}
+                      bps (n={edgeCalibration.taker.decomposition.fillCount})
+                    </div>
+                  </div>
+                  <div className="space-y-3">
+                    <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
+                      Maker Calibration
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-[10px] font-mono border-collapse">
+                        <thead>
+                          <tr className="text-ink/60 uppercase tracking-tighter">
+                            <th className="text-left py-2 pr-4">Bucket</th>
+                            <th className="text-right py-2 pr-4">Count</th>
+                            <th className="text-right py-2">Avg Realized</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {edgeCalibration.maker.buckets.map((b) => (
+                            <tr key={b.label} className="border-t border-border/20">
+                              <td className="py-2 pr-4">{b.label}</td>
+                              <td className="text-right py-2 pr-4">{b.count}</td>
+                              <td
+                                className={cn(
+                                  "text-right py-2",
+                                  (b.avgRealizedMarkoutBps ?? 0) >= 0 ? "text-neon-green" : "text-rose-500"
+                                )}
+                              >
+                                {b.avgRealizedMarkoutBps != null ? `${b.avgRealizedMarkoutBps.toFixed(2)} bps` : "—"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="text-[10px] font-mono pt-2 border-t border-border/20">
+                      Decomposition: pred{" "}
+                      {edgeCalibration.maker.decomposition.avgPredEdgeBps != null
+                        ? edgeCalibration.maker.decomposition.avgPredEdgeBps.toFixed(1)
+                        : "—"}{" "}
+                      bps
+                      {" → "}net{" "}
+                      {edgeCalibration.maker.decomposition.avgNetEdgeBps != null
+                        ? edgeCalibration.maker.decomposition.avgNetEdgeBps.toFixed(1)
+                        : "—"}{" "}
+                      bps
+                      {" → "}realized{" "}
+                      {edgeCalibration.maker.decomposition.avgRealizedMarkoutBps != null
+                        ? edgeCalibration.maker.decomposition.avgRealizedMarkoutBps.toFixed(1)
+                        : "—"}{" "}
+                      bps (n={edgeCalibration.maker.decomposition.fillCount})
+                    </div>
                   </div>
                 </div>
-              )}
-            </div>
+                <div className="pt-4 border-t border-border/40 text-[10px] font-mono">
+                  <span className="uppercase tracking-widest text-muted-foreground">Combined: </span>
+                  Taker realized{" "}
+                  {edgeCalibration.combined.takerRealizedMarkoutBps != null
+                    ? edgeCalibration.combined.takerRealizedMarkoutBps.toFixed(1)
+                    : "—"}{" "}
+                  bps (n={edgeCalibration.combined.takerFills}, win {edgeCalibration.combined.takerWinRate.toFixed(1)}%)
+                  {" · "}
+                  Maker realized{" "}
+                  {edgeCalibration.combined.makerRealizedMarkoutBps != null
+                    ? edgeCalibration.combined.makerRealizedMarkoutBps.toFixed(1)
+                    : "—"}{" "}
+                  bps (n={edgeCalibration.combined.makerFills}, fill {edgeCalibration.combined.makerFillRate.toFixed(1)}
+                  %)
+                </div>
+              </CardContent>
+            </Card>
           )}
-        </CardContent>
-      </Card>
+
+          {/* Execution Quality Summary */}
+          <Card className="bg-card/30 border-border/40 backdrop-blur-sm">
+            <CardHeader className="border-b border-border/40 pb-3">
+              <div className="flex items-center gap-2">
+                <Activity className="h-4 w-4 text-emerald-400" />
+                <CardTitle className="text-lg font-bold tracking-tight">Execution Quality</CardTitle>
+              </div>
+              <p className="text-[10px] text-muted-foreground font-mono uppercase tracking-widest mt-1">
+                Shadow fill rates and markouts (last {shadow?.windowHours ?? 24}h)
+              </p>
+            </CardHeader>
+            <CardContent className="p-6 space-y-6">
+              {shadowLoading && <div className="text-xs text-muted-foreground">Loading…</div>}
+              {!shadowLoading && shadow && (
+                <div className="space-y-6">
+                  {(viewMode === "maker" || viewMode === "all") && (
+                    <div className="space-y-3">
+                      <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
+                        Maker (shadow)
+                      </div>
+                      <div className="grid gap-4 grid-cols-2 md:grid-cols-4">
+                        <MetricCard
+                          icon={<Percent className="h-4 w-4 text-muted-foreground" />}
+                          label="Fill Rate"
+                          value={formatFillRate(shadow.maker.fillRate)}
+                        />
+                        <MetricCard
+                          icon={<Timer className="h-4 w-4 text-muted-foreground" />}
+                          label="Markout 5s"
+                          value={formatBps(shadow.maker.markout5s)}
+                        />
+                        <MetricCard
+                          icon={<Timer className="h-4 w-4 text-muted-foreground" />}
+                          label="Markout 30s"
+                          value={formatBps(shadow.maker.markout30s)}
+                        />
+                        <MetricCard
+                          icon={<Activity className="h-4 w-4 text-muted-foreground" />}
+                          label="Fills"
+                          value={`${shadow.maker.fills.toLocaleString()}`}
+                        />
+                      </div>
+                      <div className="grid gap-4 grid-cols-2 md:grid-cols-3">
+                        <MetricCard
+                          icon={<Activity className="h-4 w-4 text-slate-400" />}
+                          label="Real fills"
+                          value={formatCount(shadow.maker.realFills)}
+                          helperText="Matched to live trades"
+                        />
+                        <MetricCard
+                          icon={<Activity className="h-4 w-4 text-muted-foreground" />}
+                          label="Synthetic fills"
+                          value={formatCount(shadow.maker.syntheticFills)}
+                          helperText="Generated when the feed is idle"
+                        />
+                        <MetricCard
+                          icon={<Percent className="h-4 w-4 text-muted-foreground" />}
+                          label="Synthetic ratio"
+                          value={formatRatio(shadow.maker.syntheticRatio)}
+                          helperText="Synthetic / total fills"
+                        />
+                      </div>
+                      <p className="text-xs text-muted-foreground font-mono">
+                        Synthetic fills keep the panel populated when the live trade feed is quiet; real fills back up
+                        the maker PnL when synthetic ratio is low.
+                      </p>
+                    </div>
+                  )}
+
+                  {(viewMode === "taker" || viewMode === "all") && (
+                    <div className="space-y-3">
+                      <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
+                        Taker (shadow)
+                      </div>
+                      <div className="grid gap-4 grid-cols-2 md:grid-cols-4">
+                        <MetricCard
+                          icon={<Percent className="h-4 w-4 text-muted-foreground" />}
+                          label="Fill Rate"
+                          value={formatFillRate(shadow.taker.fillRate)}
+                        />
+                        <MetricCard
+                          icon={<Timer className="h-4 w-4 text-muted-foreground" />}
+                          label="Markout 5s"
+                          value={formatBps(shadow.taker.markout5s)}
+                        />
+                        <MetricCard
+                          icon={<Timer className="h-4 w-4 text-muted-foreground" />}
+                          label="Markout 30s"
+                          value={formatBps(shadow.taker.markout30s)}
+                        />
+                        <MetricCard
+                          icon={<Activity className="h-4 w-4 text-muted-foreground" />}
+                          label="Fills"
+                          value={`${shadow.taker.fills.toLocaleString()}`}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </>
       )}
 

@@ -160,11 +160,7 @@ const parseRewardMultiplier = (raw: string | null): number => {
       parsed.b ??
       null;
     const multiplier =
-      typeof value === "number"
-        ? value
-        : typeof value === "string" && value.trim() !== ""
-          ? Number(value)
-          : null;
+      typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : null;
     return Number.isFinite(multiplier) && (multiplier as number) > 0 ? (multiplier as number) : 1;
   } catch {
     return 1;
@@ -361,10 +357,12 @@ export class MakerLoop {
        VALUES (@ts, @tokenId, @walletId, @kind, @strategyLane, @decisionGroupId, @decision, @decisionReason, @predEdgeBps, @costBps, @netEdgeBps,
                @spreadBps, @feesBps, @expectedSlippageBps, @midPx, @spreadPx, @deltaHat, @size, @bidPx, @askPx, @bidDepth, @askDepth)`
     );
-    this.insertSubmitOrderAndDecisionTx = deps.sqlite.transaction((orderRow: Record<string, unknown>, decisionRow: Record<string, unknown>) => {
-      this.insertShadowOrderStmt.run(orderRow);
-      this.insertDecisionLogStmt.run(decisionRow);
-    });
+    this.insertSubmitOrderAndDecisionTx = deps.sqlite.transaction(
+      (orderRow: Record<string, unknown>, decisionRow: Record<string, unknown>) => {
+        this.insertShadowOrderStmt.run(orderRow);
+        this.insertDecisionLogStmt.run(decisionRow);
+      }
+    );
 
     this.scheduler = new TaskScheduler(() => this.tick(), {
       name: "MakerLoop",
@@ -456,11 +454,20 @@ export class MakerLoop {
 
       const pHat = prior.probability;
       const depthScale = Math.max(1, this.config.minDepth * 2);
-      const fillProbBid = clamp(0.05 + (bidDepth / depthScale) * 0.5 + (spread / this.config.maxSpread) * 0.35, 0.05, 0.95);
-      const fillProbAsk = clamp(0.05 + (askDepth / depthScale) * 0.5 + (spread / this.config.maxSpread) * 0.35, 0.05, 0.95);
-      const tickSize = Number.isFinite(feature.minimumTickSize) && (feature.minimumTickSize as number) > 0
-        ? (feature.minimumTickSize as number)
-        : 0.001;
+      const fillProbBid = clamp(
+        0.05 + (bidDepth / depthScale) * 0.5 + (spread / this.config.maxSpread) * 0.35,
+        0.05,
+        0.95
+      );
+      const fillProbAsk = clamp(
+        0.05 + (askDepth / depthScale) * 0.5 + (spread / this.config.maxSpread) * 0.35,
+        0.05,
+        0.95
+      );
+      const tickSize =
+        Number.isFinite(feature.minimumTickSize) && (feature.minimumTickSize as number) > 0
+          ? (feature.minimumTickSize as number)
+          : 0.001;
 
       for (const wallet of walletRuntimes) {
         const openBidOrder = openOrderMap.get(`${wallet.walletId}:${feature.tokenId}:BUY`) ?? null;
@@ -598,11 +605,15 @@ export class MakerLoop {
           1,
           Math.min(sizeBase * askRegimeMultiplier, this.config.maxNotionalPerOrderUsd / askPx)
         );
-        const effectiveMaxInvBid = maxInv * clamp(bidRegimeMultiplier, modulation.inventoryScaleFloor, modulation.inventoryScaleCap);
-        const effectiveMaxInvAsk = maxInv * clamp(askRegimeMultiplier, modulation.inventoryScaleFloor, modulation.inventoryScaleCap);
+        const effectiveMaxInvBid =
+          maxInv * clamp(bidRegimeMultiplier, modulation.inventoryScaleFloor, modulation.inventoryScaleCap);
+        const effectiveMaxInvAsk =
+          maxInv * clamp(askRegimeMultiplier, modulation.inventoryScaleFloor, modulation.inventoryScaleCap);
 
-        const invPenaltyBid = Math.max(0, Math.abs(position + bidSize) - Math.abs(position)) * this.config.inventoryLambdaBps;
-        const invPenaltyAsk = Math.max(0, Math.abs(position - askSize) - Math.abs(position)) * this.config.inventoryLambdaBps;
+        const invPenaltyBid =
+          Math.max(0, Math.abs(position + bidSize) - Math.abs(position)) * this.config.inventoryLambdaBps;
+        const invPenaltyAsk =
+          Math.max(0, Math.abs(position - askSize) - Math.abs(position)) * this.config.inventoryLambdaBps;
         const expectedRebateBidBps = estimateExpectedMakerRebateBps({
           marketProfile,
           shares: bidSize,
@@ -633,12 +644,8 @@ export class MakerLoop {
           rewardsMaxSpread: feature.rewardsMaxSpread,
           rewardsRatesJson: feature.rewardsRatesJson
         });
-        const expectedLiquidityBidBps = localBidScoring
-          ? this.config.liquidityRewardBpsWhenScoring ?? 1
-          : 0;
-        const expectedLiquidityAskBps = localAskScoring
-          ? this.config.liquidityRewardBpsWhenScoring ?? 1
-          : 0;
+        const expectedLiquidityBidBps = localBidScoring ? (this.config.liquidityRewardBpsWhenScoring ?? 1) : 0;
+        const expectedLiquidityAskBps = localAskScoring ? (this.config.liquidityRewardBpsWhenScoring ?? 1) : 0;
 
         const bidCost = computeCostBreakdown({
           role: "MAKER",
@@ -648,11 +655,11 @@ export class MakerLoop {
           spreadPx: spread,
           sizeShares: bidSize,
           marketProfile,
-          feeRateBps: finiteOr(feature.feeRateBps, 0),
+          feeRateBps: feature.feeRateBps,
           slippageBps: this.config.slippageBps,
           adverseSelectionBps: this.config.adverseSelectionBps,
           queueLossBps: this.config.queueLossBps,
-          rebateBps: this.config.rebateBps,
+          rebateBps: expectedRebateBidBps > 0 ? 0 : this.config.rebateBps,
           expectedRebateBps: expectedRebateBidBps,
           expectedLiquidityRewardsBps: expectedLiquidityBidBps,
           inventoryPenaltyBps: invPenaltyBid
@@ -665,11 +672,11 @@ export class MakerLoop {
           spreadPx: spread,
           sizeShares: askSize,
           marketProfile,
-          feeRateBps: finiteOr(feature.feeRateBps, 0),
+          feeRateBps: feature.feeRateBps,
           slippageBps: this.config.slippageBps,
           adverseSelectionBps: this.config.adverseSelectionBps,
           queueLossBps: this.config.queueLossBps,
-          rebateBps: this.config.rebateBps,
+          rebateBps: expectedRebateAskBps > 0 ? 0 : this.config.rebateBps,
           expectedRebateBps: expectedRebateAskBps,
           expectedLiquidityRewardsBps: expectedLiquidityAskBps,
           inventoryPenaltyBps: invPenaltyAsk
@@ -689,7 +696,7 @@ export class MakerLoop {
           slippageBps: this.config.slippageBps,
           adverseSelectionBps: this.config.adverseSelectionBps,
           queueLossBps: this.config.queueLossBps,
-          rebateBps: this.config.rebateBps,
+          rebateBps: expectedRebateBidBps > 0 ? 0 : this.config.rebateBps,
           expectedRebateBps: expectedRebateBidBps,
           expectedLiquidityRewardsBps: expectedLiquidityBidBps,
           inventoryPenaltyBps: invPenaltyBid,
@@ -708,7 +715,7 @@ export class MakerLoop {
           slippageBps: this.config.slippageBps,
           adverseSelectionBps: this.config.adverseSelectionBps,
           queueLossBps: this.config.queueLossBps,
-          rebateBps: this.config.rebateBps,
+          rebateBps: expectedRebateAskBps > 0 ? 0 : this.config.rebateBps,
           expectedRebateBps: expectedRebateAskBps,
           expectedLiquidityRewardsBps: expectedLiquidityAskBps,
           inventoryPenaltyBps: invPenaltyAsk,
@@ -903,7 +910,12 @@ export class MakerLoop {
       effectiveHalfSpreadBps: number;
     };
   }): Promise<void> {
-    if (input.openOrder?.price != null && input.openOrder?.size != null && Number.isFinite(input.openOrder.price) && Number.isFinite(input.openOrder.size)) {
+    if (
+      input.openOrder?.price != null &&
+      input.openOrder?.size != null &&
+      Number.isFinite(input.openOrder.price) &&
+      Number.isFinite(input.openOrder.size)
+    ) {
       const priceDriftBps = Math.abs(((input.price - (input.openOrder.price as number)) / input.mid) * 10_000);
       const sizeDrift = Math.abs(input.size - (input.openOrder.size as number)) / Math.max(1, input.size);
       if (priceDriftBps <= this.config.priceToleranceBps && sizeDrift <= 0.1) {
@@ -915,9 +927,8 @@ export class MakerLoop {
     const decisionGroupId = toDecisionGroupId();
     let clientOrderId = `${decisionGroupId}:${input.walletId}`;
     let externalOrderId: string | null = null;
-    const shouldAttemptLive = this.config.executionMode === "FULL" &&
-      this.deps.execution?.isEnabled() &&
-      !input.shadowOnly;
+    const shouldAttemptLive =
+      this.config.executionMode === "FULL" && this.deps.execution?.isEnabled() && !input.shadowOnly;
     let status: string = shouldAttemptLive ? "PENDING" : "OPEN";
     let filledSize = 0;
     let filledPrice: number | null = null;

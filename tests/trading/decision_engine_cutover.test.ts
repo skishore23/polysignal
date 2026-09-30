@@ -81,7 +81,7 @@ describe("DecisionEngine cutover", () => {
       queueLossBps: 0.5,
       expectedRebateBps: 3,
       expectedLiquidityRewardsBps: 1,
-      rebateBps: 1,
+      rebateBps: 0,
       inventoryPenaltyBps: 0,
       fillProbability: 0.8,
       minExpectedEvBps: 2
