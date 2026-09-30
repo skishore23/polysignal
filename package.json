@@ -79,7 +79,7 @@
 
   },
   "devDependencies": {
-    "@playwright/test": "^1.49.1",
+    "@playwright/test": "^1.62.1",
     "@types/better-sqlite3": "^7.6.8",
     "@types/node": "^22.10.6",
     "@types/ws": "^8.18.1",
