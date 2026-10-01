@@ -14,11 +14,13 @@ MCP service. Skills-only submission needs no MCP demo, MCP cases or reviewer log
 
 ## Public pages
 
-README.md describes the plugin and publisher. SUPPORT.md points to GitHub Issues.
-PRIVACY.md covers confirmed offline/no-telemetry processing, host processing and
-public support posts. TERMS.md identifies the existing Apache-2.0 license, free
-use and supported research scope. The manifest must use publicly verified GitHub
-URLs for these files; local documents alone do not complete the URL requirements.
+The public site is https://skishore23.github.io/polysignal/. Its index explains
+the project; support.html points to GitHub Issues; privacy.html covers offline
+processing, host behavior, website requests and public support; terms.html
+identifies the Apache-2.0 license and free research scope. All four URLs were
+opened publicly and their content verified before inclusion in plugin 0.1.2.
+The Codex compatibility overlay omits supportURL because its older schema does
+not support that field; the portable manifest includes all four URLs.
 
 ## Build and validate
 

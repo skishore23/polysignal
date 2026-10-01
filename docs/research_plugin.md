@@ -1,7 +1,7 @@
 # Standalone research plugin
 
 Source: `plugins/polysignal-research/`. Build: `python3 scripts/package-research-plugin.py`.
-Output: `dist/plugins/polysignal-research-0.1.1.zip` and its SHA-256 sidecar.
+Output: `dist/plugins/polysignal-research-0.1.2.zip` and its SHA-256 sidecar.
 
 ## Extraction choice
 
@@ -51,3 +51,11 @@ Country targeting uses [] and review.commerce is false, consistent with the
 current official plugin-submission documentation. Individual verification remains
 unconfirmed. Start at https://platform.openai.com/settings/organization/general,
 then use https://platform.openai.com/plugins for the submission draft.
+
+## GitHub Pages site — 2026-10-01
+
+https://skishore23.github.io/polysignal/ now hosts the project overview, animated
+signal illustration, 168 exact synthetic scenarios, direct ZIP download and
+support/privacy/terms/methods pages. Plugin 0.1.2 points its listing URLs to the
+verified site. GitHub Pages serves only generated artifacts from gh-pages, while
+source remains in PR #9. The site is live; directory submission remains pending.

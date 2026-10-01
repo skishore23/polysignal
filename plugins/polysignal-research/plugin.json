@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "polysignal-research",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Offline prediction-market arithmetic, depth analysis, and evidence verification.",
   "license": "Apache-2.0",
   "extensions": {
@@ -20,13 +20,13 @@
         "logo": "./assets/icon.png",
         "composerIcon": "./assets/icon.png",
         "developerName": "Kishore Shimikeri",
-        "websiteURL": "https://github.com/skishore23/polysignal/blob/56e5cff4952324632ff6f4ce96b581d0ca781b00/plugins/polysignal-research/README.md",
-        "supportURL": "https://github.com/skishore23/polysignal/blob/56e5cff4952324632ff6f4ce96b581d0ca781b00/plugins/polysignal-research/SUPPORT.md",
-        "privacyPolicyURL": "https://github.com/skishore23/polysignal/blob/56e5cff4952324632ff6f4ce96b581d0ca781b00/plugins/polysignal-research/PRIVACY.md",
-        "termsOfServiceURL": "https://github.com/skishore23/polysignal/blob/56e5cff4952324632ff6f4ce96b581d0ca781b00/plugins/polysignal-research/TERMS.md"
+        "websiteURL": "https://skishore23.github.io/polysignal/",
+        "supportURL": "https://skishore23.github.io/polysignal/support.html",
+        "privacyPolicyURL": "https://skishore23.github.io/polysignal/privacy.html",
+        "termsOfServiceURL": "https://skishore23.github.io/polysignal/terms.html"
       },
       "publication": {
-        "release_notes": "Adds publisher Kishore Shimikeri, free distribution in all supported countries, signal icon and public documentation to the initial offline research toolkit.",
+        "release_notes": "Adds the public GitHub Pages website with an animated project overview, 168 exact synthetic fee scenarios, direct plugin downloads, and published support, privacy, and terms pages. Offline research commands remain unchanged.",
         "countries": []
       },
       "review": {
