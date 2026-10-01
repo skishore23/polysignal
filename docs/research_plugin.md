@@ -59,3 +59,11 @@ signal illustration, 168 exact synthetic scenarios, direct ZIP download and
 support/privacy/terms/methods pages. Plugin 0.1.2 points its listing URLs to the
 verified site. GitHub Pages serves only generated artifacts from gh-pages, while
 source remains in PR #9. The site is live; directory submission remains pending.
+
+## Plain-language site refresh — 2026-10-01
+
+The user reports individual developer verification is complete. Portal sign-in
+and draft review remain separate checks. The landing page now leads with concrete
+PolySignal benefits and explains the offline plugin separately from the full
+paper-trading project. Calculator labels use plain language; assumptions and
+method limits remain available. Plugin 0.1.2 bytes are unchanged by this copy update.

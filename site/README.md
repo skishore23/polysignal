@@ -31,8 +31,8 @@ commit containing only `dist/site/`, and fast-forward pushes to `gh-pages` witho
 changing the source checkout or index. A concurrent remote update fails the push
 rather than overwriting it. GitHub Pages must be configured to `gh-pages`, `/`.
 
-The source currently lives on `codex/polysignal-research` in PR #9. Publication of
-the site is independent of merging that PR. Keep the artifact branch and its
+Source is maintained under `site/` and was introduced in PR #9. Publication of
+the site is independent of source merges. Keep the artifact branch and its
 history; don't rewrite it. Rebuild and republish on content or package changes.
 
 ## Checked manually
