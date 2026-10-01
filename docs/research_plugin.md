@@ -41,3 +41,13 @@ Public GitHub documentation covers the plugin, support, privacy and terms. Confi
 publisher identity in the developer portal, inspect imported listing metadata,
 complete attestations and submit for review. Directory publication follows approval.
 See the plugin's `DISTRIBUTION.md`. A public source branch is not directory approval.
+
+## Publication preparation update — 2026-10-01
+
+The Codex plugin validator passed after confirmed publisher metadata was added.
+All four listing pages are public, were opened without authentication, and are
+pinned to GitHub commit 56e5cff4952324632ff6f4ce96b581d0ca781b00 in both manifests.
+Country targeting uses [] and review.commerce is false, consistent with the
+current official plugin-submission documentation. Individual verification remains
+unconfirmed. Start at https://platform.openai.com/settings/organization/general,
+then use https://platform.openai.com/plugins for the submission draft.

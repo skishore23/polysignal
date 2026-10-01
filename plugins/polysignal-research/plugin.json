@@ -19,7 +19,11 @@
         ],
         "logo": "./assets/icon.png",
         "composerIcon": "./assets/icon.png",
-        "developerName": "Kishore Shimikeri"
+        "developerName": "Kishore Shimikeri",
+        "websiteURL": "https://github.com/skishore23/polysignal/blob/56e5cff4952324632ff6f4ce96b581d0ca781b00/plugins/polysignal-research/README.md",
+        "supportURL": "https://github.com/skishore23/polysignal/blob/56e5cff4952324632ff6f4ce96b581d0ca781b00/plugins/polysignal-research/SUPPORT.md",
+        "privacyPolicyURL": "https://github.com/skishore23/polysignal/blob/56e5cff4952324632ff6f4ce96b581d0ca781b00/plugins/polysignal-research/PRIVACY.md",
+        "termsOfServiceURL": "https://github.com/skishore23/polysignal/blob/56e5cff4952324632ff6f4ce96b581d0ca781b00/plugins/polysignal-research/TERMS.md"
       },
       "publication": {
         "release_notes": "Adds publisher Kishore Shimikeri, free distribution in all supported countries, signal icon and public documentation to the initial offline research toolkit.",
