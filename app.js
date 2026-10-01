@@ -52,6 +52,6 @@ fetch('scenarios.json').then((r) => { if (!r.ok) throw new Error('Scenario data 
 }).catch(() => { $('load-status').textContent = 'Interactive data could not load. The displayed default is a fixed synthetic example. Download the tools to calculate locally.'; });
 fetch('release.json').then((r) => r.ok ? r.json() : Promise.reject()).then((r) => { $('release-version').textContent = `Release ${r.version}`; }).catch(() => {});
 $('copy-command').addEventListener('click', async () => {
-  try { await navigator.clipboard.writeText($('command-text').textContent); $('copy-status').textContent = 'Example command copied.'; }
+  try { await Promise.race([navigator.clipboard.writeText($('command-text').textContent), new Promise((_, reject) => setTimeout(() => reject(new Error('Clipboard unavailable')), 1500))]); $('copy-status').textContent = 'Example command copied.'; }
   catch { $('copy-status').textContent = 'Select the command above and copy it manually.'; }
 });
