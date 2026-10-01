@@ -1,0 +1,26 @@
+{
+  "legs": [
+    {
+      "outcome": "YES",
+      "conditionId": "synthetic-condition",
+      "collateralAsset": "synthetic-unit",
+      "tokenId": "synthetic-YES",
+      "netShares": "10",
+      "finality": "CONFIRMED",
+      "receiptRef": "synthetic-receipt-YES",
+      "partitionVerified": true
+    },
+    {
+      "outcome": "NO",
+      "conditionId": "synthetic-condition",
+      "collateralAsset": "synthetic-unit",
+      "tokenId": "synthetic-NO",
+      "netShares": "10",
+      "finality": "CONFIRMED",
+      "receiptRef": "synthetic-receipt-NO",
+      "partitionVerified": true
+    }
+  ],
+  "totalCost": "9.80",
+  "remainingCostCap": "0.02"
+}

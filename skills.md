@@ -127,3 +127,9 @@ Update this file when any of the following change:
 - Scripts or configs become the new source of truth.
 
 Last updated: 2026-09-30
+
+## Standalone Research Plugin
+- `plugins/polysignal-research/` bundles three offline skills and four Python commands without network, database or trading access. Publisher: Kishore Shimikeri; free; all supported countries.
+- Test: `python3 -m unittest discover -s plugins/polysignal-research/tests -v`. Package: `python3 scripts/package-research-plugin.py`.
+- `PROVENANCE.json` pins extracted economics; changing it requires mathematical verification and a deliberate source-hash update. Snapshot sweeps do not establish fills, and hash integrity does not authenticate venue evidence.
+- Public listing preparation: plugin `DISTRIBUTION.md`; individual developer verification and portal attestations remain separate from local validation.

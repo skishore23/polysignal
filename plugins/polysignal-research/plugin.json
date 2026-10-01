@@ -1,0 +1,37 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "polysignal-research",
+  "version": "0.1.1",
+  "description": "Offline prediction-market arithmetic, depth analysis, and evidence verification.",
+  "license": "Apache-2.0",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "PolySignal Research",
+        "shortDescription": "Audit prediction-market math",
+        "longDescription": "Offline prediction-market research tools extracted from PolySignal: explicit fee-scenario arithmetic, order-book depth and weighted midpoint analysis, conditional complete-set payout bounds, and hash-linked evidence integrity checks. Includes three agent skills and dependency-free Python commands. Requires a local host with Python 3.10 or newer and shell/file access. Does not fetch prices, submit orders, authenticate venue receipts, or certify profitability.",
+        "category": "Productivity",
+        "capabilities": [],
+        "defaultPrompt": [
+          "Model a prediction-market round trip with explicit fee and slippage assumptions.",
+          "Analyze my order-book snapshot and show how much depth is actually available.",
+          "Verify my evidence journal against its manifest and independently retained root."
+        ],
+        "logo": "./assets/icon.png",
+        "composerIcon": "./assets/icon.png",
+        "developerName": "Kishore Shimikeri"
+      },
+      "publication": {
+        "release_notes": "Adds publisher Kishore Shimikeri, free distribution in all supported countries, signal icon and public documentation to the initial offline research toolkit.",
+        "countries": []
+      },
+      "review": {
+        "commerce": false,
+        "commerce_description": "Free. No purchases, subscriptions, payment collection or paid features."
+      }
+    }
+  },
+  "author": {
+    "name": "Kishore Shimikeri"
+  }
+}
