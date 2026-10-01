@@ -4,7 +4,7 @@
 Run explicitly after site/build.py and review. Does not merge or alter the source
 branch/index. Remote push is fast-forward only. Pages must use gh-pages / as source.
 """
-import os
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -21,7 +21,9 @@ def git(*args,input=None):
 
 def main():
     subprocess.run([sys.executable,str(ROOT/'site/verify.py')],check=True)
-    if {p.name for p in OUT.iterdir()}!=EXPECTED:raise ValueError('Unexpected file in site output')
+    version=json.loads((OUT/'release.json').read_text())['version']
+    expected=EXPECTED | {f'polysignal-research-{version}.zip', f'polysignal-research-{version}.zip.sha256'}
+    if {p.name for p in OUT.iterdir()}!=expected:raise ValueError('Unexpected file in site output')
     source=git('rev-parse','HEAD')
     if git('status','--porcelain','--','site','plugins/polysignal-research','scripts/package-research-plugin.py'):
         raise ValueError('Commit source changes before publishing')

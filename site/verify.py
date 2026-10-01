@@ -40,6 +40,8 @@ for row in data.values():
     assert Decimal(row['spent'])<=10
     assert Fraction(row['sellShares'])+Fraction(row['residualShares'])==Fraction(row['netShares'])
 release=json.loads((OUT/'release.json').read_text())
+assert (OUT/f"polysignal-research-{release['version']}.zip").read_bytes()==(OUT/'polysignal-research.zip').read_bytes()
+assert '{{version}}' not in (OUT/'index.html').read_text()
 assert hashlib.sha256((OUT/'polysignal-research.zip').read_bytes()).hexdigest()==release['sha256']
 with zipfile.ZipFile(OUT/'polysignal-research.zip') as z:
     assert z.testzip() is None

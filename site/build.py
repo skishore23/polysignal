@@ -40,10 +40,17 @@ def build():
     manifest=json.loads((PLUGIN/'plugin.json').read_text())
     version=manifest['version']; archive=ROOT/'dist/plugins'/f'polysignal-research-{version}.zip'
     for name in ['index.html','styles.css','app.js','favicon.svg']:
-        shutil.copy2(ROOT/'site'/name,OUT/name)
+        if name == 'index.html':
+            (OUT/name).write_text((ROOT/'site'/name).read_text().replace('{{version}}',version))
+        else:
+            shutil.copy2(ROOT/'site'/name,OUT/name)
     # Stable download name; metadata and checksum expose the actual embedded version.
+    for old in OUT.glob('polysignal-research-*.zip*'):
+        old.unlink()  # Generated versioned downloads only; source packages remain in dist/plugins.
+    shutil.copy2(archive,OUT/archive.name)
     shutil.copy2(archive,OUT/'polysignal-research.zip')
     digest=hashlib.sha256(archive.read_bytes()).hexdigest()
+    (OUT/(archive.name+'.sha256')).write_text(f'{digest}  {archive.name}\n')
     (OUT/'polysignal-research.zip.sha256').write_text(f'{digest}  polysignal-research.zip\n')
     (OUT/'release.json').write_text(json.dumps({'version':version,'sha256':digest},indent=2)+'\n')
     shutil.copy2(PLUGIN/'LICENSE',OUT/'license.txt')
