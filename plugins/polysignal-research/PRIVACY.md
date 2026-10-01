@@ -19,6 +19,14 @@ govern that processing. Offline Python execution does not imply that an agent
 conversation stays on your device. Manage or delete local inputs/results on your
 device and conversations through the host's controls.
 
+## Project website
+
+The project website is hosted on GitHub Pages. It serves static pages, assets,
+precomputed synthetic scenarios and plugin downloads. Scenario controls select
+local precomputed results; this website has no analytics, tracking cookies,
+account form or publisher-operated upload endpoint. GitHub receives ordinary
+web requests when serving the site under its own privacy practices.
+
 ## GitHub and support
 
 The project uses [GitHub Issues](https://github.com/skishore23/polysignal/issues)
