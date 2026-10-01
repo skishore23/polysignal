@@ -26,3 +26,7 @@ packages/**/tsconfig.tsbuildinfo
 reports/
 .DS_Store
 .tmp-*.log
+
+# Generated plugin packages and public site artifacts
+/dist/
+**/__pycache__/

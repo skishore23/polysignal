@@ -127,3 +127,15 @@ Update this file when any of the following change:
 - Scripts or configs become the new source of truth.
 
 Last updated: 2026-09-30
+
+## Standalone Research Plugin
+- `plugins/polysignal-research/` bundles three offline skills and four Python commands without network, database or trading access. Publisher: Kishore Shimikeri; free; all supported countries.
+- Test: `python3 -m unittest discover -s plugins/polysignal-research/tests -v`. Package: `python3 scripts/package-research-plugin.py`.
+- `PROVENANCE.json` pins extracted economics; changing it requires mathematical verification and a deliberate source-hash update. Snapshot sweeps do not establish fills, and hash integrity does not authenticate venue evidence.
+- Public listing preparation: plugin `DISTRIBUTION.md`; individual developer verification and portal attestations remain separate from local validation.
+
+## Public Research Website
+- `site/` is the GitHub Pages source. `python3 site/build.py` creates allowlisted `dist/site/` pages, a plugin download and 168 scenarios computed by the bundled Decimal engine. `python3 site/verify.py` verifies internal links, exact hand results, rational share conservation and ZIP integrity.
+- Preview: `python3 -m http.server 8767 --bind 127.0.0.1 --directory dist/site`. Animations support pause and reduced motion; no analytics or external font/CDN requests.
+- After explicit publication authorization and committed source, `python3 site/publish.py` fast-forward pushes only generated public files to `gh-pages`; GitHub Pages serves that branch's root. It does not merge the source PR or publish research datasets.
+- Public site: https://skishore23.github.io/polysignal/. Site scenarios are synthetic, not market observations. Regenerate the site after plugin manifest or policy changes so downloads and listing pages stay consistent.
