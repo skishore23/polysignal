@@ -33,6 +33,7 @@ Purpose: fast onboarding for contributors and coding agents working in this repo
 - Dev process behavior: root `dev` uses `concurrently --kill-others-on-fail` (other process is terminated only when one exits non-zero/failure).
 - Tests: `npm test`, `npm run test:unit`, `npm run test:integration`, `npm run test:validation`, `npm run e2e`.
 - Mathematical assurance: `pnpm math:assurance` (hand fixtures, Python 3.11 Decimal differential oracle, fixed-seed properties). Read `docs/math_assurance.md` before changing economics or claiming fee-adjusted P&L.
+- Paper accounting report: migrate, then `GET /api/accounting-report?walletId=<id>&valuationTs=<epoch-ms>`. `POST` to the same route with those JSON fields freezes a report for later `GET ?reportId=<hash>`. New shadow fills post versioned economics atomically; opening state, transfers and settlements use `postAccountingEvent`. Missing evidence makes `netPnl` null. The math assurance command includes runtime-to-independent-ledger reconciliation.
 - Typecheck/lint/format: `npm run typecheck`, `npm run lint`, `npm run format`.
 - Doctor (full): `npx tsx scripts/doctor.ts --db ./data/dev.db --hours 24 --horizonMs 600000 --strict`.
 - Doctor (quick): `npx tsx scripts/archive/manual-diagnostics/doctor-quick.ts --db ./data/dev.db --hours 24 --horizonMs 600000`.
@@ -90,6 +91,7 @@ Purpose: fast onboarding for contributors and coding agents working in this repo
 - Current fee defaults are a dated paper scenario, not verified historical rules. Explicit zero differs from missing token fee metadata; unknown profiles and historical as-of pricing without a matching bounded schedule fail closed.
 - BUY share-fee EV uses expected per-share value at the same prediction target as gross edge. New taker SELL orders need held shares; an uncollateralized short is not executable.
 - Gross shadow-position P&L is not a fee/share-reconciled net result. Do not use legacy `netPnl` displays as promotion proof; see `docs/math_assurance.md`.
+- The separate accounting report covers new paper postings only and labels modeled fees. Retention does not prune `accounting_events`; historical and user WebSocket fills are not backfilled. Set `GIT_COMMIT_SHA` for a pinned report code version.
 - Live CLOB adapters remain dormant for research parity. Re-enabling them requires an explicit, separately reviewed architecture and safety change.
 - Order lifecycle is explicit and monotonic for execution rows:
   - Canonical status set: `PENDING | OPEN | PARTIAL | FILLED | CANCELLED | REJECTED`.

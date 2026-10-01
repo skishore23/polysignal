@@ -281,6 +281,52 @@ export const shadowFills = sqliteTable(
   })
 );
 
+export const accountingEvents = sqliteTable(
+  'accounting_events',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    eventKey: text('event_key').notNull().unique(),
+    accountKey: text('account_key').notNull(),
+    kind: text('kind').notNull(),
+    source: text('source').notNull(),
+    sourceRef: text('source_ref').notNull(),
+    orderId: integer('order_id'),
+    tradeId: text('trade_id'),
+    tokenId: text('token_id'),
+    side: text('side'),
+    eventTs: integer('event_ts').notNull(),
+    receiptTs: integer('receipt_ts').notNull(),
+    processingOrder: integer('processing_order').notNull(),
+    finality: text('finality').notNull(),
+    grossShares: real('gross_shares'),
+    netSharesDelta: real('net_shares_delta'),
+    price: real('price'),
+    cashDelta: real('cash_delta'),
+    feeAsset: text('fee_asset'),
+    feeAmount: real('fee_amount'),
+    feeEvidence: text('fee_evidence').notNull(),
+    ruleVersion: text('rule_version').notNull(),
+    roundingPolicy: text('rounding_policy').notNull(),
+    collateralAsset: text('collateral_asset').notNull(),
+    correctsEventKey: text('corrects_event_key'),
+  },
+  (t) => ({
+    accountOrderIdx: index('accounting_events_account_order_idx').on(
+      t.accountKey,
+      t.eventTs,
+      t.processingOrder,
+      t.eventKey,
+    ),
+    sourceIdx: index('accounting_events_source_idx').on(t.source, t.sourceRef),
+  }),
+);
+
+export const accountingReports = sqliteTable('accounting_reports', {
+  reportId: text('report_id').primaryKey(),
+  reportJson: text('report_json').notNull(),
+  createdTs: integer('created_ts').notNull(),
+});
+
 export const shadowState = sqliteTable("shadow_state", {
   id: integer("id").primaryKey(),
   lastTradeSeq: integer("last_trade_seq").notNull(),

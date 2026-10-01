@@ -25,4 +25,6 @@ packages/**/tsconfig.tsbuildinfo
 .wink/
 reports/
 .DS_Store
+__pycache__/
+*.pyc
 .tmp-*.log

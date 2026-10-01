@@ -4,4 +4,5 @@ export * from "./retention";
 export * from "./aggregation";
 export * from "./backup";
 export * from "./audit";
+export * from "./accounting";
 export { eq, and, or, desc, asc, sql } from "drizzle-orm";

@@ -25,6 +25,8 @@ import type Database from "better-sqlite3";
 export const PROTECTED_TABLES = [
   // Core trading data - NEVER delete
   "wallets",
+  "accounting_events",
+  "accounting_reports",
   "markets",
   "tokens",
   "settings",

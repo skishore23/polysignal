@@ -7,7 +7,8 @@ import {
   type CanonicalOrderStatus
 } from "../execution/orderStateMachine";
 import { classifyMarketProfile } from "../trading/MarketProfile";
-import { computeFeeEquivalentUsdc, getMakerRebatePoolPct } from "../trading/PolymarketFeeMath";
+import { computeFeeEquivalentUsdc, computeTakerFee, getMakerRebatePoolPct } from "../trading/PolymarketFeeMath";
+import { postAccountingEvent } from "@polysignal/storage";
 
 type ShadowConfig = {
   intervalMs: number;
@@ -405,62 +406,157 @@ export class ShadowExecutionLoop {
     method: string;
     note: string;
   }): boolean {
-    if (!Number.isFinite(args.price) || !Number.isFinite(args.size) || args.size <= FILL_EPS) {
+    if (
+      !Number.isFinite(args.price) ||
+      args.price <= 0 ||
+      args.price >= 1 ||
+      !Number.isFinite(args.size) ||
+      args.size <= FILL_EPS
+    ) {
       return false;
     }
+    return this.deps.sqlite.transaction((): boolean => {
+      const row = this.selectOrderLifecycleStmt.get(args.orderId) as
+        | {
+            id: number;
+            size: number | null;
+            status: string | null;
+            filledSize: number | null;
+            filledPrice: number | null;
+          }
+        | undefined;
+      if (!row) return false;
 
-    const row = this.selectOrderLifecycleStmt.get(args.orderId) as
-      | {
-          id: number;
-          size: number | null;
-          status: string | null;
-          filledSize: number | null;
-          filledPrice: number | null;
+      const currentStatus = normalizeOrderStatus(row.status);
+      if (!isActiveOrderStatus(currentStatus)) return false;
+
+      const totalSize =
+        Number.isFinite(row.size) && (row.size as number) > 0 ? (row.size as number) : null;
+      const prevFilled = Number.isFinite(row.filledSize) ? (row.filledSize as number) : 0;
+      const remaining = totalSize != null ? Math.max(0, totalSize - prevFilled) : args.size;
+      const acceptedSize = Math.min(args.size, remaining);
+      if (acceptedSize <= FILL_EPS) return false;
+
+      const nextFilledSize = prevFilled + acceptedSize;
+      const prevFilledPrice = Number.isFinite(row.filledPrice) ? (row.filledPrice as number) : null;
+      const nextFilledPrice =
+        prevFilledPrice != null && prevFilled > FILL_EPS
+          ? (prevFilledPrice * prevFilled + args.price * acceptedSize) / nextFilledSize
+          : args.price;
+      const desiredStatus = this.resolveNextStatus(currentStatus, nextFilledSize, totalSize);
+      if (!canTransitionOrderStatus(currentStatus, desiredStatus)) {
+        this.deps.logger.warn(
+          { orderId: args.orderId, fromStatus: currentStatus, toStatus: desiredStatus },
+          'Shadow fill status transition blocked',
+        );
+        return false;
+      }
+
+      const order = this.deps.sqlite
+        .prepare(
+          `SELECT o.wallet_id AS walletId, o.token_id AS tokenId,
+      o.market_id AS marketId, o.side, o.kind, t.fee_rate_bps AS feeRateBps,
+      m.question, m.slug, e.title AS eventTitle
+      FROM shadow_orders o LEFT JOIN tokens t ON t.id = o.token_id
+      LEFT JOIN markets m ON m.id = o.market_id
+      LEFT JOIN market_events e ON e.id = m.event_id WHERE o.id = ?`,
+        )
+        .get(args.orderId) as {
+        walletId: number | null;
+        tokenId: string;
+        marketId: string | null;
+        side: 'BUY' | 'SELL';
+        kind: string;
+        feeRateBps: number | null;
+        question: string | null;
+        slug: string | null;
+        eventTitle: string | null;
+      };
+      const isTaker = order.kind === 'TAKER_BUY' || order.kind === 'TAKER_SELL';
+      let feeAsset: 'USDC' | 'SHARES' | null = 'USDC';
+      let feeAmount: number | null = 0;
+      let feeEvidence: 'MODELED' | 'MISSING' = 'MODELED';
+      let ruleVersion = 'paper-maker-zero-fee-v1';
+      if (isTaker) {
+        try {
+          const marketProfile = classifyMarketProfile({
+            question: order.question,
+            slug: order.slug,
+            eventTitle: order.eventTitle,
+            feeRateBps: order.feeRateBps,
+          });
+          const fee = computeTakerFee({
+            marketProfile,
+            shares: acceptedSize,
+            price: args.price,
+            side: order.side,
+            feeRateBps: order.feeRateBps,
+            marketId: order.marketId ?? undefined,
+            tokenId: order.tokenId,
+          });
+          feeAsset = fee.sharesFee > 0 ? 'SHARES' : 'USDC';
+          feeAmount = fee.sharesFee > 0 ? fee.sharesFee : fee.usdcFee;
+          ruleVersion = fee.scheduleVersion;
+        } catch {
+          feeAsset = null;
+          feeAmount = null;
+          feeEvidence = 'MISSING';
+          ruleVersion = 'missing-paper-fee-profile';
         }
-      | undefined;
-    if (!row) return false;
-
-    const currentStatus = normalizeOrderStatus(row.status);
-    if (!isActiveOrderStatus(currentStatus)) return false;
-
-    const totalSize = Number.isFinite(row.size) && (row.size as number) > 0 ? (row.size as number) : null;
-    const prevFilled = Number.isFinite(row.filledSize) ? (row.filledSize as number) : 0;
-    const remaining = totalSize != null ? Math.max(0, totalSize - prevFilled) : args.size;
-    const acceptedSize = Math.min(args.size, remaining);
-    if (acceptedSize <= FILL_EPS) return false;
-
-    const nextFilledSize = prevFilled + acceptedSize;
-    const prevFilledPrice = Number.isFinite(row.filledPrice) ? (row.filledPrice as number) : null;
-    const nextFilledPrice =
-      prevFilledPrice != null && prevFilled > FILL_EPS
-        ? (prevFilledPrice * prevFilled + args.price * acceptedSize) / nextFilledSize
-        : args.price;
-    const desiredStatus = this.resolveNextStatus(currentStatus, nextFilledSize, totalSize);
-    if (!canTransitionOrderStatus(currentStatus, desiredStatus)) {
-      this.deps.logger.warn(
-        { orderId: args.orderId, fromStatus: currentStatus, toStatus: desiredStatus },
-        "Shadow fill status transition blocked"
-      );
-      return false;
-    }
-
-    this.insertFillStmt.run({
-      ts: args.ts,
-      orderId: args.orderId,
-      price: args.price,
-      size: acceptedSize,
-      method: args.method,
-      note: args.note
-    });
-
-    this.updateOrderLifecycleStmt.run({
-      id: args.orderId,
-      status: desiredStatus,
-      filledSize: nextFilledSize,
-      filledPrice: Number.isFinite(nextFilledPrice) ? nextFilledPrice : null,
-      lastUpdateTs: args.ts
-    });
-    return true;
+      }
+      const grossCash = acceptedSize * args.price;
+      const netSharesDelta =
+        feeEvidence === 'MISSING'
+          ? null
+          : order.side === 'BUY'
+            ? acceptedSize - (feeAsset === 'SHARES' ? (feeAmount ?? 0) : 0)
+            : -acceptedSize;
+      const cashDelta =
+        order.side === 'BUY'
+          ? -grossCash - (feeAsset === 'USDC' ? (feeAmount ?? 0) : 0)
+          : grossCash - (feeAsset === 'USDC' ? (feeAmount ?? 0) : 0);
+      const fillResult = this.insertFillStmt.run({
+        ts: args.ts,
+        orderId: args.orderId,
+        price: args.price,
+        size: acceptedSize,
+        method: args.method,
+        note: args.note,
+      });
+      const fillId = Number(fillResult.lastInsertRowid);
+      postAccountingEvent(this.deps.sqlite, {
+        eventKey: `shadow-fill:${fillId}`,
+        accountKey: `wallet:${order.walletId ?? 'unattributed'}`,
+        kind: 'FILL',
+        source: `shadow:${args.method}`,
+        sourceRef: String(fillId),
+        orderId: args.orderId,
+        tokenId: order.tokenId,
+        side: order.side,
+        eventTs: args.ts,
+        receiptTs: Date.now(),
+        processingOrder: fillId,
+        finality: 'SIMULATED',
+        grossShares: acceptedSize,
+        netSharesDelta,
+        price: args.price,
+        cashDelta,
+        feeAsset,
+        feeAmount,
+        feeEvidence,
+        ruleVersion,
+        roundingPolicy: 'fee-usdc-5dp-half-up;cash-and-shares-unrounded',
+        collateralAsset: 'USDC',
+      });
+      this.updateOrderLifecycleStmt.run({
+        id: args.orderId,
+        status: desiredStatus,
+        filledSize: nextFilledSize,
+        filledPrice: Number.isFinite(nextFilledPrice) ? nextFilledPrice : null,
+        lastUpdateTs: args.ts,
+      });
+      return true;
+    })();
   }
 
   private processTakerOrders(): void {
