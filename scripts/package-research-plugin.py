@@ -26,7 +26,9 @@ def build():
         if portable[key] != compat[key]:
             raise ValueError(f'Manifest mismatch: {key}')
     interface = portable['extensions']['com.openai']['interface']
-    if interface != compat['interface'] or len(interface['shortDescription']) > 30:
+    # Older Codex overlay schema lacks supportURL; retain it in the portable manifest.
+    compatible_interface = {key: value for key, value in interface.items() if key != 'supportURL'}
+    if compatible_interface != compat['interface'] or len(interface['shortDescription']) > 30:
         raise ValueError('Invalid or inconsistent presentation metadata')
     for manifest in (portable, compat):
         if manifest.get('apps') is not None or manifest.get('extensions', {}).get('com.openai', {}).get('apps') is not None:
