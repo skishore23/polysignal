@@ -12,7 +12,7 @@
   "dependencies": {
     "@polymarket/clob-client": "^5.2.1",
     "@polysignal/utils": "workspace:*",
-    "ethers": "^5.8.0",
+    "ethers": "^6.17.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
