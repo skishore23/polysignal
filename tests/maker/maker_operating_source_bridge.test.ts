@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { createOperatingSourceState } from "../../scripts/research/maker_operating_source_bridge";
+import { createOperatingSourceState, OPERATING_TICK_SIZE_RESYNC } from "../../scripts/research/maker_operating_source_bridge";
 import { deriveMakerStartupInputs, type BridgeStreamItem, type MakerStartupSourceInput } from "../../scripts/research/maker_startup_source_bridge";
 import type { StartupClock } from "../../scripts/research/maker_quote_startup";
 
@@ -60,6 +60,64 @@ function comparePrefixes(stream: BridgeStreamItem[]) {
 }
 
 describe("incremental original-token observation state", () => {
+  const tickEvent = (overrides: Record<string,unknown> = {}) => ({
+    event_type:"tick_size_change", market:condition, asset_id:token, old_tick_size:"0.01",
+    new_tick_size:"0.001", timestamp:String(start+22), ...overrides,
+  });
+  const emptyBook = {event_type:"book", ...snapshot(22), asks:[]};
+  it.each([
+    ["tick_change_mixed_frame",tickEvent()],
+    ["empty_book_mixed_frame",emptyBook],
+  ] as const)("keeps a mixed frame fatal when a malformed sibling follows %s", (reason, control) => {
+    const state=createOperatingSourceState(fixture());
+    state.process(full(20));
+    const expected = new RegExp("^maker_source:"+reason+"$");
+    const invalidSibling = {event_type:"book",market:condition,asset_id:token,asks:"invalid"};
+    expect(()=>state.process(frame(22,[control,invalidSibling]))).toThrow(expected);
+    expect(()=>state.bookStatus(at(22))).toThrow(expected);
+    expect(()=>state.snapshot(at(22))).toThrow(expected);
+    expect(()=>state.process(full(23))).toThrow(expected);
+  });
+  it("preserves both availability signals in single-message arrays", () => {
+    const tickState=createOperatingSourceState(fixture());
+    expect(()=>tickState.process(frame(22,[tickEvent()]))).toThrow(/^maker_source:validated_tick_size_change$/);
+    const emptyState=createOperatingSourceState(fixture());
+    expect(()=>emptyState.process(frame(22,[emptyBook]))).toThrow(/^maker_source:empty_book_side$/);
+  });
+  it.each(["0.1","0.005","0.0025","0.001","0.0001"])("requires a fresh metadata epoch for a witnessed change to %s", tick => {
+    const state = createOperatingSourceState(fixture());
+    state.process(full(20));
+    const before = state.bookStatus(at(20));
+    const expectResync = (fn: () => unknown) => expect(fn).toThrowError(/^maker_source:validated_tick_size_change$/);
+    expect(OPERATING_TICK_SIZE_RESYNC).toBe("maker_source:validated_tick_size_change");
+    expectResync(() => state.process(frame(22,tickEvent({new_tick_size:tick}))));
+    for (const read of [() => state.bookStatus(at(22)), () => state.snapshot(at(22)),
+      () => state.process(full(23)), () => state.process(sample(24))]) expectResync(read);
+    expect(before.book.tick).toBe("0.01");
+  });
+  const invalidChanges: [Record<string, unknown>, string][] = [
+    [{market:"other"}, "frame_market"], [{asset_id:"999"}, "tick_change_asset"],
+    [{timestamp:String(start+19)},"backdated_tick_change"], [{timestamp:String(start+23)},"future_venue_time"],
+    [{timestamp:start+22},"venue_timestamp"], [{old_tick_size:undefined},"decimal_type"],
+    [{old_tick_size:"0.001"},"tick_change_old_grid"], [{new_tick_size:"0.010"},"tick_change_new_grid"],
+    [{new_tick_size:"0"},"tick_change_new_grid"], [{new_tick_size:"0.002"},"tick_change_new_grid"],
+    [{new_tick_size:0.001},"decimal_type"], [{new_tick_size:"1e-3"},"decimal_format"],
+  ];
+  it.each(invalidChanges)("keeps malformed tick evidence terminal without requesting metadata %j", (change, reason) => {
+    const state=createOperatingSourceState(fixture());
+    state.process(full(20));
+    expect(()=>state.process(frame(22,tickEvent(change)))).toThrow("maker_source:"+reason);
+    expect(()=>state.bookStatus(at(25))).toThrow("maker_source:"+reason);
+  });
+  it("validates the tick-change venue clock against selected trades and invalidated delta watermarks", () => {
+    const s=createOperatingSourceState(fixture());
+    s.process(full(20)); s.process(frame(26,trade(26))); s.process(frame(27,trade(23)));
+    expect(()=>s.process(frame(28,tickEvent({timestamp:String(start+25)})))).toThrow("backdated_tick_change");
+    const invalid=createOperatingSourceState(fixture());
+    invalid.process(full(20)); invalid.process(full(25,19)); invalid.process(delta(28,bid()));
+    expect(()=>invalid.process(frame(28,tickEvent({timestamp:String(start+27)})))).toThrow("backdated_tick_change");
+  });
+
   it.each([{bad:null,why:"book_side_schema"},{bad:[{}],why:"decimal_type"},
     {bad:[{price:"0.54",size:"0"}],why:"duplicate_or_empty_level"}])("rejects mixed empty/malformed snapshots before clean unavailability: $why",({bad,why})=>{
     const f=fixture(), state=createOperatingSourceState(f);
