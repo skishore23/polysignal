@@ -141,6 +141,9 @@ export class ClobWsClient {
         log?.warn({ err: String(err) }, "CLOB WS message parse failed");
         return;
       }
+      // Valid JSON can still be a non-event (notably null). Do not let a
+      // malformed frame escape the listener or acquire market semantics.
+      if (msg == null || typeof msg !== "object" || Array.isArray(msg)) return;
 
       const eventType = msg.event_type ?? msg.type ?? msg.msg_type;
       const tokenId = msg.asset_id ?? msg.token_id ?? msg.assetId ?? null;

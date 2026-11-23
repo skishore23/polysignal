@@ -54,6 +54,26 @@ describe("ClobWsClient", () => {
 
   // Documented raw API shapes, not recorded venue executions:
   // https://docs.polymarket.com/market-data/realtime-data (Market Stream / API).
+  it("ignores non-event JSON without throwing and still processes the next valid trade", () => {
+    const { client, ws, onTrade, onBook, onPriceChange } = harness();
+    try {
+      for (const frame of ["null", "false", "42", '"text"', "[]", "[null]"]) {
+        expect(() => ws.emit("message", frame)).not.toThrow();
+      }
+      expect(onTrade).not.toHaveBeenCalled();
+      expect(onBook).not.toHaveBeenCalled();
+      expect(onPriceChange).not.toHaveBeenCalled();
+      ws.emit("message", JSON.stringify({
+        event_type: "last_trade_price", asset_id: "token-1",
+        price: "0.08", size: "1", side: "BUY", timestamp: "1782753357257"
+      }));
+      expect(onTrade).toHaveBeenCalledTimes(1);
+      expect(onTrade).toHaveBeenCalledWith(expect.objectContaining({
+        tokenId: "token-1", price: 0.08, size: 1, timestamp: 1782753357257
+      }));
+    } finally { client.close(); }
+  });
+
   it("preserves the documented millisecond string timestamp", () => {
     const { client, ws, onTrade } = harness();
     try {
