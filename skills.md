@@ -159,3 +159,17 @@ per order/aggregate pending risk/exposure, preserving the configured10-share
 target and ordinary EV/flow/regime gates. Earlier frozen2-USDC results remain
 unchanged. Use a unique reviewed admission, actual sample clocks, anchored exact
 deltas and terminal receipt-journal verification; never infer live authority.
+
+### Owner28 sustained shadow maker
+
+Use docs/maker_operating.md and the reviewed maker_operating_service.py kernel-lock
+launcher for sustained PAPER quotes. The new virtual100/order20/aggregate40 profile
+uses exact budget/venue-floor sizing, capacity-normalized inventory preference,
+all original entry gates, pending reservation guards and TTL/source/policy cancels.
+This is ordinary quote-only engineering; no live client, Pi, fills or PnL claim.
+Standing source admission binds62 inputs and actual sample-history proof. Rotate
+journals without resetting source history; persist per-slot attempt debt and
+reconcile one virtual bank at stop, restart, rollover and reviewed version carry.
+Never reuse old frozen2/6/startup results as new admissions or reward evidence.
+RL-Exp restaurant and archived MEV environments do not define maker rewards.
+A future learning/discovery claim still requires its separate scientific gates.
