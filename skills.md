@@ -140,3 +140,22 @@ Last updated: 2026-09-30
 - Preview: `python3 -m http.server 8767 --bind 127.0.0.1 --directory dist/site`. Animations support pause and reduced motion; no analytics or external font/CDN requests.
 - After explicit publication authorization and committed source, `python3 site/publish.py` fast-forward pushes only generated public files to `gh-pages`; GitHub Pages serves that branch's root. It does not merge the source PR or publish research datasets.
 - Public site: https://skishore23.github.io/polysignal/. Site scenarios are synthetic, not market observations. Regenerate the site after plugin manifest or policy changes so downloads and listing pages stay consistent.
+
+### Codex-owned isolated paper maker startup
+
+Codex now owns ordinary startup engineering; Emergent research is held until
+readiness. See `docs/maker_paper_startup.md` and
+`scripts/research/maker_paper_startup.ts`. The prospective, independently admitted
+recipe has four explicit public reads (including token fee rate) and one bounded
+market socket, with measured body bytes and unknown wire costs. Explicit Gamma
+version selects legacy token IDs versus V2 position IDs; venue USDC minimum and
+share minimum are separate. No actual fills, live routing or Pi dispatch. Reuse
+the current guarded no-fill path and its regressions; do not infer a run from an
+offline fixture, idle host or known historical rows. Preserve old accounts,
+preexisting changes and the paused Pi allowance.
+
+The owner-selected prospective paper profile is virtual cash10 USDC and6 USDC
+per order/aggregate pending risk/exposure, preserving the configured10-share
+target and ordinary EV/flow/regime gates. Earlier frozen2-USDC results remain
+unchanged. Use a unique reviewed admission, actual sample clocks, anchored exact
+deltas and terminal receipt-journal verification; never infer live authority.
