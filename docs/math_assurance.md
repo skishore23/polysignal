@@ -55,6 +55,8 @@ To establish an evaluation boundary, post an `OPENING` event for each account's 
 
 The regression suite was first run against the reviewed code; all eight immediate golden groups failed before the fixes. Existing tests for the superseded curve were updated to explicit current-contract expectations. Production code never generates the golden answer key.
 
+Unposted-fill detection uses the same event and receipt cutoffs as the event fold. A later posting cannot hide a retained fill gap or change a report frozen before that posting became eligible. This does not supply missing receipt timestamps for historical shadow rows or authenticate their historical availability.
+
 ## Not yet certified
 
 - Historical fee effective dates, venue rounding ties and fee payment assets are not verified by the current documentation alone. Prior reports must be treated as old-model scenarios until re-run with pinned historical rules; no old evidence is deleted.

@@ -392,6 +392,47 @@ describe('runtime accounting event to report', () => {
     ).toThrow('INVALID_FILL_POSTING');
   });
 
+  it.each(['receipt', 'event'] as const)(
+    'does not let a posting beyond the %s cutoff hide an unposted shadow fill',
+    async (lateField) => {
+      const db = await createTempDb();
+      opened.push(db);
+      postAccountingEvent(
+        db.sqlite,
+        event({ eventKey: 'opening', kind: 'OPENING', sourceRef: 'opening', cashDelta: 10 }),
+      );
+      const orderId = Number(db.sqlite.prepare(`INSERT INTO shadow_orders
+        (ts, wallet_id, token_id, side, kind, execution_mode)
+        VALUES (?, 7, 't', 'BUY', 'MAKER_BID', 'SHADOW')`).run(base).lastInsertRowid);
+      const fillId = Number(db.sqlite.prepare(`INSERT INTO shadow_fills
+        (ts, order_id, price, size, method) VALUES (?, ?, 0.5, 1, 'trade_match')`)
+        .run(base, orderId).lastInsertRowid);
+      db.sqlite.prepare("INSERT INTO latest_features (token_id, ts, mid) VALUES ('t', ?, 0.5)")
+        .run(base);
+      const valuationTs = base + 5;
+      const receiptTs = base + 5;
+      const before = getAccountingReport(db.sqlite, 'wallet:7', valuationTs, receiptTs);
+      postAccountingEvent(db.sqlite, event({
+        eventKey: `shadow-fill:${fillId}`, kind: 'FILL', sourceRef: String(fillId),
+        orderId, tokenId: 't', side: 'BUY', grossShares: 1, netSharesDelta: 1,
+        price: 0.5, cashDelta: -0.5, feeAsset: 'USDC', feeAmount: 0,
+        feeEvidence: 'MODELED', finality: 'SIMULATED',
+        eventTs: lateField === 'event' ? base + 10 : base,
+        receiptTs: lateField === 'receipt' ? base + 10 : base,
+      }));
+      const after = getAccountingReport(db.sqlite, 'wallet:7', valuationTs, receiptTs);
+      expect(after.issues).toContainEqual({ code: 'UNPOSTED_SHADOW_FILL', fillId, tokenId: 't' });
+      expect(after.complete).toBe(false);
+      expect(after.netPnl).toBeNull();
+      expect(after.reportId).toBe(before.reportId);
+      const admitted = getAccountingReport(db.sqlite, 'wallet:7', base + 10, base + 10);
+      expect(admitted.complete).toBe(true);
+      expect(admitted.cash).toBe(9.5);
+      expect(admitted.positions[0]?.shares).toBe(1);
+      expect(admitted.netPnl).toBe(0);
+    },
+  );
+
   it('rolls back a fill when its accounting posting fails', async () => {
     const db = await createTempDb();
     opened.push(db);
