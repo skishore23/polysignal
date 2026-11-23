@@ -157,6 +157,51 @@ class Transport(unittest.TestCase):
             m.run(self.path)
         self.assertEqual(self.saved()["status"], "FAILED_NO_RETRY")
         self.assertEqual(len(self.conn.requests), 1)
+    def test_expiry_during_local_evidence_setup_prevents_network(self):
+        # Disk work consumes the same fixed window; it must not renew the clock.
+        wall = self.admission["not_before_utc_ms"] + 1000
+        clocks = {"wall": wall / 1000, "mono": 100.0}
+        original_write = Path.write_text
+        def slow_receipt(path, *args, **kwargs):
+            result = original_write(path, *args, **kwargs)
+            if path.name == "receipt.json":
+                clocks["wall"] += 11
+                clocks["mono"] += 11
+            return result
+        with patch.object(m.time, "time", side_effect=lambda: clocks["wall"]), \
+             patch.object(m.time, "monotonic", side_effect=lambda: clocks["mono"]), \
+             patch.object(Path, "write_text", slow_receipt):
+            with self.assertRaisesRegex(ValueError, "request_deadline"):
+                m.run(self.path)
+        self.factory.assert_not_called()
+        self.assertEqual(self.conn.requests, [])
+        self.assertEqual(self.saved()["status"], "FAILED_NO_RETRY")
+    def test_clock_jump_during_local_setup_prevents_network(self):
+        clocks = {"wall": (self.admission["not_before_utc_ms"] + 1000) / 1000,
+                  "mono": 100.0}
+        original_write = Path.write_text
+        def jumping_clock(path, *args, **kwargs):
+            result = original_write(path, *args, **kwargs)
+            if path.name == "receipt.json":
+                clocks["wall"] += 0.5
+            return result
+        with patch.object(m.time, "time", side_effect=lambda: clocks["wall"]), \
+             patch.object(m.time, "monotonic", side_effect=lambda: clocks["mono"]), \
+             patch.object(Path, "write_text", jumping_clock):
+            with self.assertRaisesRegex(ValueError, "clock_disagreement"):
+                m.run(self.path)
+        self.factory.assert_not_called()
+        self.assertEqual(self.saved()["status"], "FAILED_NO_RETRY")
+    def test_connection_constructor_failure_retains_terminal_receipt(self):
+        self.factory.side_effect = OSError("synthetic_constructor_failure")
+        with self.assertRaisesRegex(OSError, "synthetic_constructor_failure"):
+            m.run(self.path)
+        self.assertEqual(self.saved()["status"], "FAILED_NO_RETRY")
+        self.assertEqual(self.saved()["failure"], "synthetic_constructor_failure")
+        self.assertEqual(self.saved()["http_requests_started"], 0)
+        with self.assertRaises(FileExistsError):
+            m.run(self.path)
+        self.assertEqual(self.factory.call_count, 1)
     def test_absolute_deadline_interrupts_slow_headers(self):
         now = int(time.time() * 1000)
         self.admission.update(not_before_utc_ms=now, expires_utc_ms=now + 100)

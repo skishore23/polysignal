@@ -21,6 +21,12 @@ the CLI to reach its network call. The exclusive ignored report directory is
 claimed before I/O. Failures, partial bodies, request debit and original fixed
 deadline remain retained. Remaining reads/bytes are accounting fields, not
 permission to continue or renew the window. Failure stops this startup attempt.
+The request clock starts at the original admission check, including local
+evidence writes. Wall/monotonic agreement and expiry are checked before
+connection construction and again before the GET. Connection construction is
+inside the alarm and failure-retention scope. `attempts_consumed` reserves the
+one-use slot; `http_requests_started` records whether the GET call was entered,
+not proof that a request reached the venue. Setup failure cannot free that slot.
 Total TLS/wire bytes and any actual provider charges remain unknown; the source
 review must explicitly reconcile body-byte accounting with the original shared
 8 MiB limit before admission. The reader does not establish a wire-byte cap.
@@ -64,7 +70,8 @@ Offline verification:
 python3 -m unittest discover -s tests/research -p test_maker_metadata_phase_a.py -v
 ```
 
-These 15 synthetic tests replace the transport with local objects; the absolute
+These 18 synthetic tests replace the transport with local objects; the absolute
 alarm check exercises a stalled local response. They prove the enumerated local
-behaviors only. They do not establish current source capability, venue execution,
+behaviors only, including expiry/clock jumps during evidence setup and retained
+connection-constructor failures. They do not establish current source capability, venue execution,
 maker start, discovery, transfer, advantage, learning or profit.

@@ -112,6 +112,7 @@ def run(admission_path: Path) -> dict:
                 "shared_public_reads": 3, "shared_body_bytes": 8388608}
     if protocol != expected:
         raise ValueError("protocol_constants_mismatch")
+    start_mono = time.monotonic()
     now = int(time.time() * 1000)
     if (admission.get("schema") != "ADR_POLY003_PHASE_A_INDEPENDENT_ADMISSION_V1"
             or admission.get("execution_admitted") is not True
@@ -136,9 +137,9 @@ def run(admission_path: Path) -> dict:
     (out / "admission.json").write_bytes(admission_raw)
     (out / "protocol.json").write_bytes(protocol_raw)
     (out / "executable.py").write_bytes(Path(__file__).read_bytes())
-    start_mono = time.monotonic()
     request_end = start_mono + min(10, (deadline - now) / 1000)
     receipt = {"url": URL, "attempts_consumed": 1, "market_subscriptions_consumed": 0,
+               "http_requests_started": 0,
                "shared_start_utc_ms": now, "shared_deadline_utc_ms": deadline,
                "admission_sha256": digest(admission_raw), "status": "REQUEST_CLAIMED",
                "body_bytes": 0, "wire_bytes": None, "actual_account_charge_USD": None,
@@ -146,14 +147,26 @@ def run(admission_path: Path) -> dict:
     def persist():
         (out / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
     persist()
-    connection = http.client.HTTPSConnection(HOST, timeout=max(0.001, request_end - time.monotonic()))
+    connection = None
     previous_alarm = signal.getsignal(signal.SIGALRM)
     def timeout(_signum, _frame):
         raise TimeoutError("absolute_request_deadline")
-    signal.signal(signal.SIGALRM, timeout)
-    signal.setitimer(signal.ITIMER_REAL, max(0.001, request_end - time.monotonic()))
+    def check_before_network():
+        current_mono = time.monotonic()
+        current_wall = int(time.time() * 1000)
+        if current_mono >= request_end or current_wall >= deadline:
+            raise ValueError("request_deadline_before_network")
+        if abs(current_wall - now - (current_mono - start_mono) * 1000) > 100:
+            raise ValueError("wall_monotonic_clock_disagreement")
     try:
+        # Local evidence writes consume the original window, never renew it.
+        check_before_network()
+        signal.signal(signal.SIGALRM, timeout)
+        signal.setitimer(signal.ITIMER_REAL, request_end - time.monotonic())
+        connection = http.client.HTTPSConnection(HOST, timeout=max(0.001, request_end - time.monotonic()))
+        check_before_network()
         # Direct TLS, no environment proxies, auth, cookies, redirects or retries.
+        receipt["http_requests_started"] = 1
         connection.request("GET", TARGET, headers={"Accept": "application/json", "Accept-Encoding": "identity"})
         response = connection.getresponse()
         receipt.update(http_status=response.status, http_date=response.getheader("Date"))
@@ -193,7 +206,8 @@ def run(admission_path: Path) -> dict:
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous_alarm)
-        connection.close()
+        if connection is not None:
+            connection.close()
         receipt["elapsed_seconds"] = time.monotonic() - start_mono
         if (out / "raw-body.bin").exists():
             receipt["body_sha256"] = digest((out / "raw-body.bin").read_bytes())
