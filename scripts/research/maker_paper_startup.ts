@@ -15,13 +15,14 @@ export const sha = (raw: string | Buffer) => createHash("sha256").update(raw).di
 const json = (value: unknown) => JSON.stringify(value, null, 2) + "\n";
 function check(ok: unknown, reason: string): asserts ok { if (!ok) throw Error("paper_startup:" + reason); }
 export const RUN_PROTOCOL = {
-  schema: "CODEX_PAPER_STARTUP_PROTOCOL_V5", evidence: "PUBLIC_DEVELOPMENT_INPUTS_ONLY",
+  schema: "CODEX_PAPER_STARTUP_PROTOCOL_V6", evidence: "PUBLIC_DEVELOPMENT_INPUTS_ONLY",
   metadataRecipe: "CURRENT_FIVE_MINUTE_SLOT_BY_DOCUMENTED_SLUG",
   metadataUrlTemplate: "https://gamma-api.polymarket.com/markets/slug/btc-updown-5m-{slotStartSeconds}",
   versions: ["v1", "v2"], maxReads: 4,
   perReadBodyBytes: 2097152, maxBodyBytes: 8388608, maxMessages: 20000, maxWallMs: 300000,
   byteScope: "application response/message bodies; framing and TLS/network bytes unknown",
   sourceReceipt: "delivered application event; OS/TLS/parser buffer arrival unknown",
+  sampling: "actual monotonic interval >=1000ms; positive remainder rearm; no synthetic/catch-up samples",
   receiptJournal: "ordered append-only JSONL; geometric summary checkpoints; terminal exact replay verification",
   account: { cashUSDC: "10", shares: "0", pending: "0", paperProfile: "OWNER_6_USDC", perOrderUSDC: "6", totalLossUSDC: "6", exposureUSDC: "6", quoteSizing: "original configured target, rounded downward only" },
   fills: false, liveOrders: false, reconnect: false, retries: false, redirects: false,
@@ -107,12 +108,12 @@ export function selectCurrentBtcMarket(capture: Pick<RawCapture, "raw" | "at" | 
     selected: candidates[0] ?? null, raw_body_sha256: sha(capture.raw), quote_phase_admitted: false, rejected };
 }
 
-type Admission = { schema: "CODEX_PAPER_STARTUP_ADMISSION_V5"; executionAdmitted: true;
+type Admission = { schema: "CODEX_PAPER_STARTUP_ADMISSION_V6"; executionAdmitted: true;
   inputMode: "CURRENT_PUBLIC_CAPTURE" | "OFFLINE_FIXTURE"; runName: string; notBeforeUtcMs: number; expiresUtcMs: number;
   marketStartUtcMs?: number; metadataUrl?: string;
   protocolSha256: string; inputSha256: Record<string, string>; reviewFile: string; reviewSha256: string };
 export function validateAdmission(a: Admission, now: StartupClock, offlineInjection = false) {
-  check(a.schema === "CODEX_PAPER_STARTUP_ADMISSION_V5" && a.executionAdmitted === true, "independent_admission_required");
+  check(a.schema === "CODEX_PAPER_STARTUP_ADMISSION_V6" && a.executionAdmitted === true, "independent_admission_required");
   check(["CURRENT_PUBLIC_CAPTURE", "OFFLINE_FIXTURE"].includes(a.inputMode)
     && (!offlineInjection || a.inputMode === "OFFLINE_FIXTURE"), "test_transport_in_live_evidence");
   check(/^maker-startup-[a-zA-Z0-9_-]{1,80}$/.test(a.runName), "run_identity");
@@ -184,7 +185,7 @@ export async function runPaperStartup(admissionFile: string, test?: {
     return { ...now(), sourceSequence: f.sequence, sourceAvailable: f.open }; };
   writeFileSync(path.join(out, "frozen-admission.json"), rawAdmission, { flag: "wx" });
   writeFileSync(path.join(out, "frozen-protocol.json"), json(RUN_PROTOCOL), { flag: "wx" });
-  const result: any = { schema: "CODEX_PAPER_STARTUP_RESULT_V5", inputMode: admission.inputMode,
+  const result: any = { schema: "CODEX_PAPER_STARTUP_RESULT_V6", inputMode: admission.inputMode,
     status: "STARTING", actualQuotes: 0, fills: 0, profitUSDC: null, actualAccountChargeUSD: null,
     admissionSha256: sha(rawAdmission), traces: [], startedAt: now() };
   const stream: BridgeStreamItem[] = [], seenTrades = new Set<string>();
@@ -217,9 +218,13 @@ export async function runPaperStartup(admissionFile: string, test?: {
       onSample: async at => {
         stream.push({ kind: "sample", at });
         if (at.utc >= s.end_utc_ms) { result.status = "MARKET_ENDED_WITHOUT_QUOTE"; stop = true; return; }
-        const d = derived(at);
-        const trace: any = { at, missing: d.missing, bookInvalidation: d.bookInvalidation, featureTs: d.feature?.ts ?? null };
+        // Retain the actual sample clock even when source decoding rejects it.
+        const trace: any = { at, missing: null, bookInvalidation: null, featureTs: null };
         result.traces.push(trace);
+        let d: Derived;
+        try { d = derived(at); }
+        catch (e) { trace.failure = String(e); throw e; }
+        Object.assign(trace, { missing: d.missing, bookInvalidation: d.bookInvalidation, featureTs: d.feature?.ts ?? null });
         if (d.missing.length || at.mono - lastTick < 10000) return;
         const captureSha256 = sha(json({ gamma, selection, clobMarket, clobBook, tokenFee, stream }));
         const contract: StartupContract = { paperProfile: RUN_PROTOCOL.account.paperProfile, purpose: admission.inputMode === "OFFLINE_FIXTURE" ? "SYNTHETIC_OFFLINE_ENGINEERING" : "PROSPECTIVE_PAPER_ENGINEERING",

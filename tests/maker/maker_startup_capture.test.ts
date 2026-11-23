@@ -40,10 +40,10 @@ function harness(extra: Partial<StartupCapturePolicy> = {}, specs: ResponseSpec[
   const calls: { url: string; options: RequestOptions; destroyed: boolean }[] = [];
   const sockets: { url: string; options: CaptureSocketOptions; socket: FakeSocket }[] = [];
   const h = {
-    skew: 0, clockThrows: false, outputDir, calls, sockets,
+    skew: 0, monoSkew: 0, clockThrows: false, outputDir, calls, sockets,
     clock: () => {
       if (h.clockThrows) throw Error('clock_unavailable');
-      return { utc: Date.now() + h.skew, mono: Date.now() - EPOCH };
+      return { utc: Date.now() + h.skew, mono: Date.now() - EPOCH + h.monoSkew };
     },
     request: (url: string, options: RequestOptions, callback: (res: IncomingMessage) => void) => {
       const spec = specs[calls.length] ?? {};
@@ -310,6 +310,42 @@ describe('finite startup capture: offline injected transports only', () => {
     h.sockets[0]!.socket.emit('open');
     await vi.advanceTimersByTimeAsync(5000); await expect(pending).resolves.toMatchObject({ reason: 'shared_deadline', callbacksPending: false });
     expect(Date.now()).toBe(EPOCH + 20_000);
+  });
+
+  it('defers a fractional-early timer wake instead of enqueuing a sub-second sample', async () => {
+    const h = harness(); await ready(h); const samples: { utc: number; mono: number }[] = [];
+    const pending = h.capture.stream({ onMessage() {}, onSample(at) { samples.push(at); }, shouldStop: () => samples.length >= 2 });
+    h.sockets[0]!.socket.emit('open'); await vi.advanceTimersByTimeAsync(1000);
+    expect(samples).toEqual([{ utc: EPOCH + 1000, mono: 1000 }]);
+    // Model a legal actual monotonic wake 0.25ms before the intended interval,
+    // while the integer UTC clock has advanced normally and neither moves back.
+    h.control.monoSkew = -.25;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(samples).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toMatchObject({ reason: 'caller_stop' });
+    expect(samples).toEqual([{ utc: EPOCH + 1000, mono: 1000 }, { utc: EPOCH + 2001, mono: 2000.75 }]);
+    expect(h.capture.ledger().sampleTiming).toMatchObject({ wakes: 3, deferredWakes: 1, enqueued: 2, delivered: 2,
+      lastDeferredAt: { utc: EPOCH + 2000, mono: 1999.75 }, lastDeliveredSampleAt: samples[1] });
+  });
+
+  it('retains ordinary exact one-second sampling and its actual clock receipts', async () => {
+    const h = harness(); await ready(h); const samples: { utc: number; mono: number }[] = [];
+    const pending = h.capture.stream({ onMessage() {}, onSample(at) { samples.push(at); }, shouldStop: () => samples.length === 3 });
+    h.sockets[0]!.socket.emit('open'); await vi.advanceTimersByTimeAsync(3000); await pending;
+    expect(samples).toEqual([1000, 2000, 3000].map(mono => ({ utc: EPOCH + mono, mono })));
+    expect(h.capture.ledger().sampleTiming).toMatchObject({ wakes: 3, deferredWakes: 0, enqueued: 3, delivered: 3,
+      lastDeliveredSampleAt: { utc: EPOCH + 3000, mono: 3000 } });
+  });
+
+  it('does not extend the original source deadline to deliver a deferred sample', async () => {
+    const h = harness({ expiresUtcMs: EPOCH + 2001, maxWallMs: 2001 }); await ready(h); const samples: number[] = [];
+    const pending = h.capture.stream({ onMessage() {}, onSample(at) { samples.push(at.mono); }, shouldStop: () => false });
+    h.sockets[0]!.socket.emit('open'); await vi.advanceTimersByTimeAsync(1000); h.control.monoSkew = -.25;
+    await vi.advanceTimersByTimeAsync(1001);
+    await expect(pending).resolves.toMatchObject({ reason: 'shared_deadline', at: { utc: EPOCH + 2001 } });
+    expect(samples).toEqual([1000]); expect(h.capture.ledger().sampleTiming.deferredWakes).toBe(1);
+    expect(h.capture.observationFrontier().open).toBe(false);
   });
 
   it('records a pending callback honestly at deadline and never starts its queued successor', async () => {

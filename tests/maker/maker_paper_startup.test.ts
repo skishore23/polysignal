@@ -63,7 +63,7 @@ function setup(minimum = 0.1, failure = false, offset = 0, lateSample?: number) 
   const hashes = inputHashes(), protocolSha256 = sha(text(RUN_PROTOCOL));
   const reviewFile = path.join(out, "authored-offline-review.json");
   writeFileSync(reviewFile, text({ decision: "APPROVE_BOUNDED_PAPER_STARTUP_RUN", runName, inputMode: "OFFLINE_FIXTURE", protocolSha256, inputSha256: hashes }));
-  const admission: any = { schema: "CODEX_PAPER_STARTUP_ADMISSION_V5", executionAdmitted: true,
+  const admission: any = { schema: "CODEX_PAPER_STARTUP_ADMISSION_V6", executionAdmitted: true,
     inputMode: "OFFLINE_FIXTURE", runName, notBeforeUtcMs: start + offset, expiresUtcMs: start + offset + 300000,
     protocolSha256, inputSha256: hashes, reviewFile, reviewSha256: sha(readFileSync(reviewFile)) };
   const file = path.join(out, "authored-admission.json"); writeFileSync(file, text(admission));
@@ -146,6 +146,18 @@ describe("complete no-fill startup wiring", () => {
     expect(r.failure).toContain("stream_application_limit");
     expect(r.readiness.accountCreated).toBe(false); expect(r.actualQuotes).toBe(0);
     expect(r.profitUSDC).toBeNull();
+  });
+  it("retains the original failing sample clock before decoding rejects cadence", async () => {
+    const f = setup();
+    (f.capture as any).stream = async (hooks: any) => {
+      for (const ms of [1000, 1999]) { f.setTime(ms); await hooks.onSample(f.clock()); }
+      return { reason: "fixture_end", at: f.clock(), callbacksPending: false };
+    };
+    const r = await runPaperStartup(f.file, { clock: f.clock, capture: f.capture });
+    expect(r.status).toBe("FAILED_CLOSED"); expect(r.failure).toContain("sample_cadence");
+    expect(r.traces).toHaveLength(2);
+    expect(r.traces[1]).toMatchObject({ at: at(1999), missing: null, failure: "Error: maker_source:sample_cadence" });
+    expect(r.actualQuotes).toBe(0); expect(r.readiness.accountCreated).toBe(false);
   });
   it("retains source failure and never calls it a started maker", async () => {
     const f = setup(0.1, true); const result = await runPaperStartup(f.file, { clock: f.clock, capture: f.capture });

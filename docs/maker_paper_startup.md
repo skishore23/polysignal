@@ -103,3 +103,11 @@ journal removes cumulative ledger rewrites from the per-frame path. Receipt and
 frontier mean delivery to the application; OS/socket/wire arrival remains unknown.
 Exact validated price-level replacement/deletion requires an original WebSocket
 book anchor; an HTTP snapshot alone cannot bridge the subscription gap.
+
+V5 verified its1816-record journal but stopped on the strict sample-cadence guard
+before engine/account creation. The failed third sample clock was not retained
+in that historical result and remains unknown. V6 prospectively verifies actual
+monotonic spacing before enqueueing a sample, defers an early timer wake by the
+positive rounded-up remainder, and keeps the original deadline. It records each
+sample attempt before deriving features so decoder failures retain their exact
+input clock. It never fabricates timestamps or weakens the bridge cadence gate.
