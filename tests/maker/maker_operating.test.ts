@@ -351,8 +351,9 @@ describe('ordinary continuous operating integration, authored offline inputs onl
     expect(f.captures.map(c => c.streamCalls)).toEqual([0, 0, 1]);
     expect(f.captures[0]!.calls).toEqual(['metadata', 'market', 'book', 'fee']);
     expect(f.captures[1]!.calls).toEqual(f.captures[0]!.calls);
-    expect(f.captures[1]!.startedUtc - f.captures[0]!.startedUtc).toBeGreaterThanOrEqual(15000);
-    expect(f.captures[2]!.startedUtc - f.captures[1]!.startedUtc).toBeGreaterThanOrEqual(60000);
+    expect(OPERATING_PROTOCOL.source.metadataRetryBackoffMs).toEqual([90000, 90000]);
+    expect(f.captures[1]!.startedUtc - f.captures[0]!.startedUtc).toBeGreaterThanOrEqual(90000);
+    expect(f.captures[2]!.startedUtc - f.captures[1]!.startedUtc).toBeGreaterThanOrEqual(90000);
     const quotes = events(f.out).filter(e => e.kind === 'PAPER_QUOTE');
     expect(quotes.length).toBeGreaterThan(0); expect(quotes.every(q => q.epoch === 3)).toBe(true);
     const first = JSON.parse(readFileSync(quotes[0].evidence, 'utf8'));
