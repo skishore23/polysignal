@@ -458,7 +458,10 @@ export class StartupSourceCapture {
             if (finished) return;
             if (opened) throw Error('repeated_websocket_open');
             opened = true;
-            this.at();
+            let lastSampleEnqueuedAt = this.at();
+            this.state.sampleTiming = { intervalMonoMs: 1000, wakes: 0, deferredWakes: 0,
+              enqueued: 0, delivered: 0, openedAt: lastSampleEnqueuedAt,
+              lastWakeAt: null, lastDeferredAt: null, lastEnqueuedAt: null, lastDeliveredSampleAt: null };
             this.frontier.open = true;
             const send = (raw: string) => {
               this.state.outbound ??= [];
@@ -474,7 +477,23 @@ export class StartupSourceCapture {
             const sample = () => {
               if (finished || !accepting) return;
               try {
-                const at = this.at(); enqueue(() => callbacks.onSample(at));
+                const at = this.at();
+                const timing = this.state.sampleTiming;
+                timing.wakes++; timing.lastWakeAt = at;
+                const elapsed = at.mono - lastSampleEnqueuedAt.mono;
+                if (elapsed < 1000 || at.utc <= lastSampleEnqueuedAt.utc) {
+                  timing.deferredWakes++; timing.lastDeferredAt = at; this.persist();
+                  // Node timers may wake fractionally early relative to performance
+                  // time. Wait out the actual remainder; never round the clock up.
+                  timers.push(setTimeout(sample, Math.max(1, Math.ceil(1000 - elapsed),
+                    lastSampleEnqueuedAt.utc - at.utc + 1)));
+                  return;
+                }
+                lastSampleEnqueuedAt = at; timing.enqueued++; timing.lastEnqueuedAt = at; this.persist();
+                enqueue(() => {
+                  timing.delivered++; timing.lastDeliveredSampleAt = at; this.persist();
+                  return callbacks.onSample(at);
+                });
                 timers.push(setTimeout(sample, 1000));
               } catch (e) { stop(String(e), true); }
             };
