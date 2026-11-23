@@ -145,6 +145,31 @@ describe("original-token maker source bridge", () => {
     expect(r.orderAgeSeconds).toBe(9);
     expect(r.missing).toEqual(expect.arrayContaining(["POSITIVE_MINIMUM_ORDER_AGE_APPLICABILITY","CLOB_MINIMUM_ORDER_SIZE_UNIT_UNRESOLVED"]));
   });
+  it.each([true, false, null])("applies the legacy market's explicit payer rule with 1000 bps base fees (takerOnly=%s)", (takerOnly) => {
+    const f = fixture();
+    changeGamma(f, row => {
+      row.feesEnabled = true;
+      if (takerOnly !== null) row.feeSchedule = {rate:0.05, exponent:1, takerOnly, rebateRate:0.2};
+    });
+    changeRaw(f.clobMarket, row => {
+      row.maker_base_fee = 1000;
+      row.taker_base_fee = 1000;
+    });
+    f.tokenFee!.raw = '{"base_fee":1000}';
+    const r = deriveMakerStartupInputs(f);
+    expect([r.makerBaseFee, r.takerBaseFee, r.feeRateBps]).toEqual([1000,1000,1000]);
+    expect(r.book).toMatchObject({minimum:"5",minimumUnit:"USDC_NOTIONAL",minimumShares:"5"});
+    if (takerOnly === true) {
+      expect(r.fee?.perShareUSDC).toBe("0");
+      expect(r.fee?.provenance).toContain("feeSchedule.takerOnly=true");
+      expect(r.missing).not.toContain("POST_ONLY_MAKER_FEE_BOUND");
+      delete f.tokenFee;
+      expect(deriveMakerStartupInputs(f).fee).toBeNull();
+    } else {
+      expect(r.fee).toBeNull();
+      expect(r.missing).toContain("POST_ONLY_MAKER_FEE_BOUND");
+    }
+  });
   it("does not infer a maker fee bound from the independent position fee or from an ambiguous schedule", () => {
     const f = v2fixture();
     changeRaw(f.clobMarket,m=>m.fd.to=false);

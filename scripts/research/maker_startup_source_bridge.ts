@@ -289,10 +289,17 @@ export function deriveMakerStartupInputs(input: MakerStartupSourceInput) {
   if (feature?.vol30m == null) missing.push("OBSERVED_VOLATILITY_HISTORY");
   if (trades.length === 0) missing.push("OBSERVED_ORIGINAL_TOKEN_TRADE_FLOW");
   if (feeRateBps === null) missing.push("ORIGINAL_TOKEN_FEE_RATE_BPS");
-  const takerOnly = identity.feeSchedule?.takerOnly ?? clobFeeCurve?.takerOnly ?? null;
-  const bound = (makerBaseFee === 0 || (makerBaseFee === null && takerOnly === true)) && takerOnly !== false;
+  const gammaTakerOnly = identity.feeSchedule?.takerOnly;
+  const takerOnly = gammaTakerOnly ?? clobFeeCurve?.takerOnly ?? null;
+  // Market Details defines the explicit Gamma payer rule for makers; preserve the
+  // separately observed base rates even when the maker role incurs no fee.
+  const bound = gammaTakerOnly === true || (takerOnly !== false
+    && (makerBaseFee === 0 || (makerBaseFee === null && takerOnly === true)));
+  const payerSource = gammaTakerOnly === true
+    ? "https://docs.polymarket.com/market-data/market-details#trading-fees feeSchedule.takerOnly=true"
+    : makerFeeSource;
   const fee = bound && feeRateBps !== null
-    ? { perShareUSDC: "0", provenance: makerFeeSource + "; Gamma " + digest(input.gamma.raw)
+    ? { perShareUSDC: "0", provenance: payerSource + "; Gamma " + digest(input.gamma.raw)
       + "; CLOB " + digest(input.clobMarket.raw) + "; token fee " + digest(input.tokenFee!.raw) }
     : null;
   if (minimumUnitUnresolved) missing.push("CLOB_MINIMUM_ORDER_SIZE_UNIT_UNRESOLVED");
