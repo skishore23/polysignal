@@ -1,0 +1,8 @@
+{
+  "entry": "0.5",
+  "exit": "0.6",
+  "rate": "0.1",
+  "slippageBps": "0",
+  "feeAsset": "shares",
+  "budget": "10"
+}
