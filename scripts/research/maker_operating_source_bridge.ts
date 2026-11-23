@@ -7,7 +7,12 @@ import { deriveMakerStartupInputs, type MakerStartupSourceInput, type BridgeStre
 
 type Derived = ReturnType<typeof deriveMakerStartupInputs>;
 export type OperatingSourceMetadata = Omit<MakerStartupSourceInput, "stream">;
+export const OPERATING_TICK_SIZE_RESYNC = "maker_source:validated_tick_size_change";
 const scale = 1_000_000_000n;
+// https://docs.polymarket.com/trading/place-orders#calculate-the-order-amounts
+// An announced grid can require new metadata even when the pinned decoder
+// does not yet support quoting on that grid.
+const documentedTickUnits = new Set([100_000_000n, 10_000_000n, 5_000_000n, 2_500_000n, 1_000_000n, 100_000n]);
 const digest = (raw: string) => createHash("sha256").update(raw, "utf8").digest("hex");
 
 function check(ok: unknown, reason: string): asserts ok {
@@ -91,13 +96,14 @@ export function createOperatingSourceState(
   let streamAnchored = false;
   let bookInvalidation: string | null = null;
   let lastSelectedVenueUtc = book.venueUtc;
+  let maxTradeVenueUtc = 0;
   let failure: Error | null = null;
   const price = (v: unknown) => {
     const p = decimal(v, true);
     check(p.units > 0n && p.units < scale && p.units % tick.units === 0n, "price_grid");
     return p;
   };
-  function parseSnapshot(row: Record<string, unknown>, at: StartupClock, raw: string) {
+  function parseSnapshot(row: Record<string, unknown>, at: StartupClock, raw: string, singleton: boolean) {
     check(row.asset_id === token && row.market === condition, "book_identity");
     if (row.version !== undefined) check(v2 && row.version === "v2", "unsupported_book_version");
     if (row.tick_size !== undefined) check(decimal(row.tick_size, true).units === tick.units, "snapshot_tick_context");
@@ -115,7 +121,7 @@ export function createOperatingSourceState(
     };
     const bids = levels(row.bids), asks = levels(row.asks);
     const hash = string(row.hash);
-    check(bids.length>0 && asks.length>0,"empty_book_side");
+    check(bids.length > 0 && asks.length > 0, singleton ? "empty_book_side" : "empty_book_mixed_frame");
     const bid = bids.reduce((best, level) => Math.max(best, level.price), 0);
     const ask = asks.reduce((best, level) => Math.min(best, level.price), 1);
     check(bid < ask, "crossed_book");
@@ -199,7 +205,7 @@ export function createOperatingSourceState(
       const e = object(message);
       check(e.market === condition, "frame_market");
       if (e.event_type === "book") {
-        const next = parseSnapshot(e, item.at, item.raw);
+        const next = parseSnapshot(e, item.at, item.raw, messages.length === 1);
         if (next.observation.venueUtc < lastSelectedVenueUtc) {
           bookInvalidation = "BACKDATED_FULL_SNAPSHOT";
           continue;
@@ -209,6 +215,17 @@ export function createOperatingSourceState(
         streamAnchored = true; bookInvalidation = null; lastSelectedVenueUtc = book.venueUtc;
       } else if (e.event_type === "price_change") {
         applyPriceChange(e, item.at, item.raw);
+      } else if (e.event_type === "tick_size_change") {
+        // Raw market channel schema in https://docs.polymarket.com/market-data/realtime-data
+        check(messages.length === 1, "tick_change_mixed_frame");
+        check(e.asset_id === token, "tick_change_asset");
+        const venueUtc = venueTime(e.timestamp, item.at.utc);
+        check(venueUtc >= Math.max(identity.start, lastSelectedVenueUtc, maxTradeVenueUtc), "backdated_tick_change");
+        const oldTick = decimal(e.old_tick_size, true), newTick = decimal(e.new_tick_size, true);
+        check(oldTick.units === tick.units, "tick_change_old_grid");
+        check(newTick.units !== oldTick.units && documentedTickUnits.has(newTick.units), "tick_change_new_grid");
+        // End this decoder epoch. Only the caller's fresh receipts can bind a new grid.
+        throw new Error(OPERATING_TICK_SIZE_RESYNC);
       } else if (e.event_type === "last_trade_price") {
         check(e.asset_id === token && (e.side === "BUY" || e.side === "SELL"), "trade_identity_or_side");
         const venueUtc = venueTime(e.timestamp, item.at.utc);
@@ -221,6 +238,7 @@ export function createOperatingSourceState(
         check(!seenTrades.has(key), "ambiguous_duplicate_trade");
         check(maxTradesPerSlot === undefined || tradeState.length < maxTradesPerSlot, "trade_capacity");
         seenTrades.add(key);
+        maxTradeVenueUtc = Math.max(maxTradeVenueUtc, venueUtc);
         tradeState.push({ token, market, side: e.side, price: p.n, size: size.n, receipt: item.at,
           venueUtc, transactionHash: typeof tx === "string" ? tx : null, rawSha256: digest(item.raw) });
       } else throw Error("maker_source:unsupported_stream_event:" + String(e.event_type));

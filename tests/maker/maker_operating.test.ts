@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { OPERATING_PROTOCOL, isUnavailableEmptyBook, operatingInputHashes, reconcileOperatingDatabase, runOperatingMaker, sha, validateOperatingAdmission,
+import { OPERATING_PROTOCOL, isUnavailableEmptyBook, operatingUnavailableReason, operatingInputHashes, reconcileOperatingDatabase, runOperatingMaker, sha, validateOperatingAdmission,
   type OperatingAdmission } from '../../scripts/research/maker_operating';
 import { installStartupSink, newIsolatedStartupDatabase, type StartupContract } from '../../scripts/research/maker_quote_startup';
 import { currentSlotMetadataUrl, type RawCapture } from '../../scripts/research/maker_startup_capture';
@@ -15,7 +15,8 @@ afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); for (const dir of di
 
 function setup(options: { slots?: number; samples?: number; minimum?: number; faultAt?: number; stopAt?: number;
   badSampleAt?: number; afterSample?: (out: string) => void; emptyBookFirstAttempt?: boolean; malformedBookFirstAttempt?: boolean;
-  mixedArchiveFaultFirstAttempt?: boolean } = {}) {
+  mixedArchiveFaultFirstAttempt?: boolean; mixedBookSidesFirstAttempt?: boolean; missingMetadataAttempts?: number;
+  noEligibleAttempts?: number; malformedGammaIdentity?: boolean; tickChangeFirstAttempt?: boolean } = {}) {
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
   const out = mkdtempSync(path.resolve('reports/evidence/maker-operating-test-')); dirs.push(out);
   const runName = path.basename(out), hashes = operatingInputHashes(), protocolSha256 = sha(json(OPERATING_PROTOCOL));
@@ -26,32 +27,37 @@ function setup(options: { slots?: number; samples?: number; minimum?: number; fa
     notBeforeUtcMs: START, protocolSha256, inputSha256: hashes, owner28Sha256, reviewFile, reviewSha256: sha(readFileSync(reviewFile)) };
   const file = path.join(out, 'authored-admission.json'); writeFileSync(file, json(admission));
   let utc = START; const clock = () => ({ utc, mono: utc - START });
-  const captures: { slot: number; attempt: number; bound: unknown; calls: string[]; stopped: boolean; settled: boolean }[] = [];
+  const captures: { slot: number; attempt: number; startedUtc: number; streamCalls: number; bound: unknown;
+    calls: string[]; stopped: boolean; settled: boolean }[] = [];
   const http = (url: string, body: unknown): RawCapture => { const raw = JSON.stringify(body);
     return { url, raw, at: clock(), startedAt: clock(), status: 200, sha256: sha(raw) }; };
   const config = { ...JSON.parse(readFileSync('configs/worker.json', 'utf8')), executionMode: 'PAPER' };
   const makeCapture = (slot: number, attempt: number, dir: string) => {
     mkdirSync(dir, { mode: 0o700 });
-    const capture = { slot, attempt, bound: null as unknown, calls: [] as string[], stopped: false, settled: false }; captures.push(capture);
+    const capture = { slot, attempt, startedUtc: utc, streamCalls: 0, bound: null as unknown,
+      calls: [] as string[], stopped: false, settled: false }; captures.push(capture);
     const offset = utc - slot; let sequence = 0, open = false, priorBid = '0.49';
     const minimum = options.minimum ?? .1;
-    const gamma = { version: 'v2', id: '123', conditionId: CONDITION, slug: `btc-updown-5m-${slot / 1000}`,
+    const tick = options.tickChangeFirstAttempt && attempt > 1 ? .001 : .01;
+    const gamma = { version: 'v2', id: '123', conditionId: options.malformedGammaIdentity ? 'invalid-condition' : CONDITION, slug: `btc-updown-5m-${slot / 1000}`,
       question: 'Bitcoin Up or Down, five minutes', description: 'Authored offline operating fixture',
       eventStartTime: new Date(slot).toISOString(), endDate: new Date(slot + 300000).toISOString(),
-      active: true, closed: false, archived: false, acceptingOrders: true, enableOrderBook: true, negRisk: false,
+      active: attempt > (options.noEligibleAttempts ?? 0), closed: false, archived: false, acceptingOrders: true, enableOrderBook: true, negRisk: false,
       outcomes: '["Up","Down"]', clobTokenIds: '["999","888"]', positionIds: ['111', '222'],
-      orderPriceMinTickSize: .01, orderMinSize: minimum, volume: '100', liquidity: '100',
+      orderPriceMinTickSize: tick, orderMinSize: minimum,
+      volume: attempt <= (options.missingMetadataAttempts ?? 0) ? null : '100',
+      liquidity: attempt <= (options.missingMetadataAttempts ?? 0) ? null : '100',
       feesEnabled: true, feeSchedule: { rate: .25, exponent: 1, takerOnly: true, rebateRate: 0 } };
     const book = () => ({ version: 'v2', market: CONDITION, asset_id: '111', timestamp: String(utc),
       bids: [{ price: priorBid, size: '900' }], asks: [{ price: '0.51', size: '100' }], hash: `fixture-${utc}`,
-      tick_size: '0.01', min_order_size: String(minimum), neg_risk: false });
+      tick_size: String(tick), min_order_size: String(minimum), neg_risk: false });
     const frame = async (hooks: any, body: unknown) => { sequence++; await hooks.onMessage({ ...http('wss://ws-subscriptions-clob.polymarket.com/ws/market', body), status: null }); };
     return {
       readMetadata: async () => { capture.calls.push('metadata'); return http(currentSlotMetadataUrl(slot), gamma); },
       bindMarket: (x: unknown) => { capture.bound = x; },
       readMarket: async () => { capture.calls.push('market'); utc++;
         return http(`https://clob.polymarket.com/clob-markets/${CONDITION}`, { t: [{ t: '111', o: 'Up' }, { t: '222', o: 'Down' }],
-          mos: minimum, mts: .01, mbf: 0, tbf: 10, fd: { r: .25, e: 1, to: true }, oas: 0 }); },
+          mos: minimum, mts: tick, mbf: 0, tbf: 10, fd: { r: .25, e: 1, to: true }, oas: 0 }); },
       readBook: async () => { capture.calls.push('book'); utc++; return http('https://clob.polymarket.com/book?token_id=111', book()); },
       readFee: async () => { capture.calls.push('fee'); utc++; return http('https://clob.polymarket.com/fee-rate?token_id=111', { base_fee: 2500 }); },
       proofHeadSha256: () => sha(json({ slot, attempt, sequence })),
@@ -61,6 +67,7 @@ function setup(options: { slots?: number; samples?: number; minimum?: number; fa
       stop: () => { capture.stopped = true; open = false; },
       settleCallbacks: async () => { capture.settled = true; },
       stream: async (hooks: any) => {
+        capture.streamCalls++;
         open = true;
         for (let s = 1; s <= (options.samples ?? 30); s++) {
           if (capture.stopped || hooks.shouldStop()) break;
@@ -74,6 +81,11 @@ function setup(options: { slots?: number; samples?: number; minimum?: number; fa
           }
           if (options.malformedBookFirstAttempt && attempt === 1 && s === 14)
             await frame(hooks, { ...book(), event_type: 'book', bids: null });
+          if (options.mixedBookSidesFirstAttempt && attempt === 1 && s === 14)
+            await frame(hooks, { ...book(), event_type: 'book', bids: [], asks: null });
+          if (options.tickChangeFirstAttempt && attempt === 1 && s === 14)
+            await frame(hooks, { event_type: 'tick_size_change', market: CONDITION, asset_id: '111',
+              old_tick_size: '0.01', new_tick_size: '0.001', timestamp: String(utc) });
           const nextBid = s % 3 === 0 ? '0.48' : '0.49';
           if (s === 1 || s % 5 === 0) { priorBid = nextBid; await frame(hooks, { ...book(), event_type: 'book' }); }
           else {
@@ -159,6 +171,22 @@ describe('ordinary continuous operating integration, authored offline inputs onl
       { message: 'maker_source:empty_book_side', event_type: 'source_event' },
     ]) expect(isUnavailableEmptyBook(error)).toBe(false);
   });
+  it('classifies only known exact availability causes and rejects combined invariants or archive errors', () => {
+    for (const message of ['maker_operating:source_metadata:OBSERVED_MARKET_VOLUME_AND_LIQUIDITY'])
+      expect(operatingUnavailableReason(Error(message))).toBe('metadata_not_ready');
+    for (const message of ['maker_source:empty_book_side', 'operating:Error: maker_source:empty_book_side:'])
+      expect(operatingUnavailableReason(Error(message))).toBe('empty_book');
+    for (const message of ['maker_source:validated_tick_size_change', 'operating:Error: maker_source:validated_tick_size_change:'])
+      expect(operatingUnavailableReason(Error(message))).toBe('tick_size_change');
+    for (const cause of [
+      Error('maker_operating:source_metadata:OBSERVED_MARKET_VOLUME_AND_LIQUIDITY,KNOWN_FEE_BOUND'),
+      Error('operating:Error: maker_source:validated_tick_size_change:archive verification failed'),
+      Error('operating:Error: maker_source:empty_book_side:Error: operating:archive_frame_hash'),
+      Error('maker_source:tick_size_change'), Error('unsupported maker_source:validated_tick_size_change'),
+      Error('maker_operating:original_market_not_eligible'),
+      'maker_operating:original_market_not_eligible', { message: 'maker_source:validated_tick_size_change' },
+    ]) expect(operatingUnavailableReason(cause)).toBeNull();
+  });
   it('runs the actual engine beyond its first quote and reconciles every reservation', async () => {
     const f = setup(); vi.spyOn(Date, 'now').mockImplementation(() => f.clock().utc);
     const network = vi.spyOn(globalThis, 'fetch').mockImplementation(() => { throw Error('public network forbidden'); });
@@ -190,7 +218,7 @@ describe('ordinary continuous operating integration, authored offline inputs onl
   });
   it('reconstructs each first quote from its actual sample-journal prefix and retains failed samples before derivation', async () => {
     const f = setup({ slots: 2 }); vi.spyOn(Date, 'now').mockImplementation(() => f.clock().utc);
-    await f.run();
+    const positiveState = await f.run(); expect(positiveState.lastSourceFault, JSON.stringify(positiveState)).toBeUndefined();
     const firstQuotes = events(f.out).filter(e => e.kind === 'PAPER_QUOTE' && e.count === 1);
     expect(firstQuotes).toHaveLength(2);
     for (const event of firstQuotes) {
@@ -293,6 +321,59 @@ describe('ordinary continuous operating integration, authored offline inputs onl
     expect(state.lastSourceFault).toContain('maker_source:book_side_schema');
     expect(f.captures).toHaveLength(1); expect(events(f.out).some(e => e.kind === 'EMPTY_BOOK_RESYNC')).toBe(false);
     expect(state.pendingLiabilityNumerator).toBe('0'); expect(state.activeOrders).toBe(0);
+  });
+  it('validates both book-side schemas before interpreting either empty array as availability', async () => {
+    const f = setup({ mixedBookSidesFirstAttempt: true }); vi.spyOn(Date, 'now').mockImplementation(() => f.clock().utc);
+    const state = await f.run(); expect(state.totalQuotes).toBe(1);
+    expect(state.status).toBe('STOPPED'); expect(state.lastSourceFault).toContain('maker_source:book_side_schema');
+    expect(f.captures).toHaveLength(1); expect(events(f.out).some(e => e.kind === 'EMPTY_BOOK_RESYNC')).toBe(false);
+    expect(state.activeOrders).toBe(0); expect(state.pendingLiabilityNumerator).toBe('0');
+  });
+  it('waits for missing metadata with bounded debt before opening a third fresh healthy source', async () => {
+    const f = setup({ missingMetadataAttempts: 2 });
+    vi.spyOn(Date, 'now').mockImplementation(() => f.clock().utc);
+    const state = await f.run(); expect(f.captures.map(c => c.attempt)).toEqual([1, 2, 3]);
+    expect(f.captures.map(c => c.streamCalls)).toEqual([0, 0, 1]);
+    expect(f.captures[0]!.calls).toEqual(['metadata', 'market', 'book', 'fee']);
+    expect(f.captures[1]!.calls).toEqual(f.captures[0]!.calls);
+    expect(f.captures[1]!.startedUtc - f.captures[0]!.startedUtc).toBeGreaterThanOrEqual(15000);
+    expect(f.captures[2]!.startedUtc - f.captures[1]!.startedUtc).toBeGreaterThanOrEqual(60000);
+    const quotes = events(f.out).filter(e => e.kind === 'PAPER_QUOTE');
+    expect(quotes.length).toBeGreaterThan(0); expect(quotes.every(q => q.epoch === 3)).toBe(true);
+    const first = JSON.parse(readFileSync(quotes[0].evidence, 'utf8'));
+    expect(first.samples.records).toBeGreaterThanOrEqual(13);
+    expect(first.sampleAt.utc - f.captures[2]!.startedUtc).toBeGreaterThanOrEqual(13000);
+    expect(state.status).toBe('OFFLINE_FINISHED'); expect(state.virtualCashUSDC).toBe('100');
+    expect(state.attempt).toBe(3); expect(state.pendingLiabilityNumerator).toBe('0'); expect(state.activeOrders).toBe(0);
+    expect(terminalFiles(f.out)).toHaveLength(1);
+  });
+  it.each(['inactive', 'malformed_identity'] as const)('keeps %s Gamma selection failure fatal rather than assuming availability', async kind => {
+    const f = setup(kind === 'inactive' ? { noEligibleAttempts: 3 } : { malformedGammaIdentity: true });
+    const state = await f.run(); expect(state.status).toBe('STOPPED'); expect(state.stopReason).toBe('source_correctness_fault');
+    expect(state.lastSourceFault).toContain('original_market_not_eligible'); expect(state.totalQuotes).toBe(0);
+    expect(f.captures).toHaveLength(1); expect(f.captures[0]!.calls).toEqual(['metadata']); expect(f.captures[0]!.streamCalls).toBe(0);
+    expect(events(f.out).some(e => e.kind === 'FRESH_RESYNC_GAP')).toBe(false);
+    expect(state.virtualCashUSDC).toBe('100'); expect(state.pendingLiabilityNumerator).toBe('0');
+  });
+  it('carries missing-metadata attempt debt without a fourth attempt or invented funding', async () => {
+    const prior = setup(), f = setup({ missingMetadataAttempts: 3 }); const carried = admitOwnedCarry(f, prior);
+    const state = await f.run(); expect(f.captures.map(c => c.attempt)).toEqual([3]);
+    expect(f.captures[0]!.streamCalls).toBe(0); expect(state.totalQuotes).toBe(carried.prior.totalQuotes);
+    expect(state.totalSamples).toBe(carried.prior.totalSamples); expect(state.attempt).toBe(3);
+    expect(state.virtualCashUSDC).toBe('100'); expect(state.pendingLiabilityNumerator).toBe('0');
+    expect(state.status).toBe('OFFLINE_FINISHED'); await f.run(); expect(f.captures).toHaveLength(1);
+  });
+  it('closes on a typed tick change and fetches fresh constraints before any further quote', async () => {
+    const f = setup({ tickChangeFirstAttempt: true }); vi.spyOn(Date, 'now').mockImplementation(() => f.clock().utc);
+    const state = await f.run(); expect(f.captures.map(c => c.attempt)).toEqual([1, 2]);
+    expect(f.captures.every(c => c.calls.join(',') === 'metadata,market,book,fee')).toBe(true);
+    const quotes = events(f.out).filter(e => e.kind === 'PAPER_QUOTE');
+    expect(quotes.filter(q => q.epoch === 1)).toHaveLength(1);
+    const old = JSON.parse(readFileSync(quotes.find(q => q.epoch === 1).evidence, 'utf8'));
+    const fresh = JSON.parse(readFileSync(quotes.find(q => q.epoch === 2).evidence, 'utf8'));
+    expect(old.snapshot.contract.book.tick).toBe('0.01'); expect(fresh.snapshot.contract.book.tick).toBe('0.001');
+    expect(fresh.samples.records).toBeGreaterThanOrEqual(13); expect(state.status).toBe('OFFLINE_FINISHED');
+    expect(state.virtualCashUSDC).toBe('100'); expect(state.pendingLiabilityNumerator).toBe('0');
   });
   it('keeps a combined empty-book and archive failure fatal after a quote', async () => {
     const f = setup({ mixedArchiveFaultFirstAttempt: true }); vi.spyOn(Date, 'now').mockImplementation(() => f.clock().utc);

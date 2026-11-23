@@ -17,12 +17,14 @@ export const sha = (x: string | Buffer) => createHash("sha256").update(x).digest
 const json = (x: unknown) => JSON.stringify(x, null, 2) + "\n";
 function check(x: unknown, why: string): asserts x { if (!x) throw Error("maker_operating:" + why); }
 export const OPERATING_PROTOCOL = {
-  schema: "ORDINARY_PAPER_MAKER_OPERATING_V2", venue: "POLYMARKET_ONLY", profile: "OPERATING_BURST_V1",
+  schema: "ORDINARY_PAPER_MAKER_OPERATING_V3", venue: "POLYMARKET_ONLY", profile: "OPERATING_BURST_V1",
   account: PAPER_PROFILES.OPERATING_BURST_V1, sizing: "soft20USDC*positive_regime; exact legal venue floor within hard limits",
   inventoryPreference: "configured K50bps at full200share capacity; changed prospective convention",
   noFills: true, noLiveOrders: true, noPi: true, rewards: false, stopAtFirstQuote: false,
   source: { slotMs: 300000, startBeforeCloseMs: 60000, readsPerAttempt: 4, socketsPerAttempt: 1,
-    maxAttemptsPerSlot: 3, retryBackoffMs: [2000,10000],
+    maxAttemptsPerSlot: 3, retryBackoffMs: [2000,10000], metadataRetryBackoffMs: [15000,60000],
+    metadataNotReady: "missing only observed volume/liquidity: no quote; bounded fresh retries, then next fixed slot; generic selection failure remains fatal",
+    tickChange: "validated original-token tick event cancels and requires four fresh reads; never change grid in place",
     emptyBook: "cancel and fresh resync within existing attempts; malformed side schema remains correctness fault", rawFrameMaxBytes: 2097152,
     segmentBodyBytes: 8388608, segmentMessages: 20000, maxQueuedBytes: 8388608, maxQueuedMessages: 4000,
     maxTradesPerSlot: 20000, reconnect: "fresh explicit attempt; cancel and reset history; no continuous-gap claim" },
@@ -59,6 +61,15 @@ export function isUnavailableEmptyBook(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   return error.message === "maker_source:empty_book_side"
     || error.message === "operating:Error: maker_source:empty_book_side:";
+}
+/** Exact clean causes only: an archive/schema failure appended by cleanup stays fatal. */
+export function operatingUnavailableReason(error: unknown): "empty_book"|"metadata_not_ready"|"tick_size_change"|null {
+  if (!(error instanceof Error)) return null;
+  if(isUnavailableEmptyBook(error))return "empty_book";
+  if(error.message === "maker_operating:source_metadata:OBSERVED_MARKET_VOLUME_AND_LIQUIDITY")return "metadata_not_ready";
+  if(error.message === "maker_source:validated_tick_size_change"
+    || error.message === "operating:Error: maker_source:validated_tick_size_change:")return "tick_size_change";
+  return null;
 }
 function atomic(file: string, value: unknown) { const tmp = file + "." + randomUUID() + ".tmp"; writeFileSync(tmp,json(value),{flag:"wx",mode:0o600}); renameSync(tmp,file); }
 export function reconcileOperatingDatabase(file: string, utc: number, allowedRunDirectory: string) {
@@ -171,7 +182,7 @@ export async function runOperatingMaker(admissionFile: string, test?: { clock:()
           freeDiskReserveBytes:OPERATING_PROTOCOL.capacity.minimumFreeDiskBytes},now,path.join(dir,"source"));
         let db:Database.Database|null=null,engine:ReturnType<typeof createIsolatedMaker>|null=null,lastTick=-Infinity,knownQuotes=0;
         appliedFrames=0;
-        let normalEnd=false;currentBook=null;sink=null;const seen=new Set<string>();
+        let normalEnd=false,availability:ReturnType<typeof operatingUnavailableReason>=null;currentBook=null;sink=null;const seen=new Set<string>();
         const samplesFile=path.join(dir,"samples.ndjson"),samplesFd=openSync(samplesFile,"ax",0o600);
         let sampleHead=sha("OPERATING_ACTUAL_SAMPLE_CLOCKS_V1"),sampleRecords=0,sampleBytes=0;
         const sourceClock=()=>{const f=capture!.observationFrontier();return {...now(),sourceSequence:f.sequence,sourceAvailable:f.open};};
@@ -230,7 +241,10 @@ export async function runOperatingMaker(admissionFile: string, test?: { clock:()
           emit("SOURCE_ATTEMPT_END",{epoch,termination:term});
         } catch(e){state.lastSourceFault=String(e);emit("SOURCE_ATTEMPT_FAULT",{epoch,error:String(e)});
           if(now().utc>=slot+300000)normalEnd=true;
-          else if(isUnavailableEmptyBook(e))emit("EMPTY_BOOK_RESYNC",{epoch,slot,attempt});
+          else if((availability=operatingUnavailableReason(e))) {
+            cancel("source_"+availability);
+            emit(availability==="empty_book"?"EMPTY_BOOK_RESYNC":"SOURCE_UNAVAILABLE_RESYNC",{epoch,slot,attempt,reason:availability});
+          }
           else if(String(e).includes("maker_source:") || String(e).includes("maker_operating_source:") || String(e).includes("source_metadata:") || String(e).includes("maker_operating:"))stop("source_correctness_fault");
         } finally {
           const finalCapture=capture as Capture;
@@ -253,7 +267,10 @@ export async function runOperatingMaker(admissionFile: string, test?: { clock:()
           if(cleanupFailure)throw cleanupFailure;
         }
         if(normalEnd || stopping)break;
-        if(attempt<3 && now().utc<=slot+240000){emit("FRESH_RESYNC_GAP",{slot,nextAttempt:attempt+1});await wait(OPERATING_PROTOCOL.source.retryBackoffMs[attempt-1]!);}
+        if(attempt<3 && now().utc<=slot+240000){
+          const backoffMs=(availability==="metadata_not_ready"?OPERATING_PROTOCOL.source.metadataRetryBackoffMs:OPERATING_PROTOCOL.source.retryBackoffMs)[attempt-1]!;
+          state.status="WAITING_SOURCE_RESYNC";emit("FRESH_RESYNC_GAP",{slot,nextAttempt:attempt+1,reason:availability,backoffMs});save();await wait(backoffMs);state.status="RUNNING";
+        }
       }
       finishedSlots++;if(!stopping && (!test || finishedSlots<test.maxSlots)){state.status="WAITING_NEXT_SLOT";save();await wait(Math.max(1,slot+300000-now().utc+1));}
     }
