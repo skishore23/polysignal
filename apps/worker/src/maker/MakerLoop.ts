@@ -1,5 +1,6 @@
 import type { Logger } from "../logger";
 import { sizeMakerQuote } from "./quoteSizing";
+import { sizeBudgetMakerQuote } from "./budgetQuoteSizing";
 import { TaskScheduler } from "../utils/TaskScheduler";
 import type { LiveExecutionGateway } from "../execution/clobExecution";
 import { BeliefEngine, type BeliefContext } from "../belief";
@@ -35,6 +36,7 @@ type MakerLoopConfig = {
   minExpectedEvBps: number;
   maxInventoryAbs: number;
   inventoryLambdaBps: number;
+  inventoryPenaltyCapacityShares?: number;
   quoteHalfSpreadBps: number;
   maxSpread: number;
   minDepth: number;
@@ -58,8 +60,9 @@ type MakerDeps = {
   belief: BeliefEngine;
   execution?: LiveExecutionGateway;
   regimeGate?: RegimeGate;
-  quoteConstraints?: (tokenId: string, marketId: string | null) => {
+  quoteConstraints?: (tokenId: string, marketId: string | null, context?: { walletId: number; side: "BUY" | "SELL"; replacementOrderId: number | null }) => {
     minimumShares: string; minimumNotionalUSDC: string; shareIncrement: string;
+    budgetUSDC?: number; availableLiabilityUSDC?: string | number; feePerShareUSDC?: string; reservedShares?: string | number;
   } | null;
 };
 
@@ -614,24 +617,45 @@ export class MakerLoop {
         const effectiveMaxInvAsk =
           maxInv * clamp(askRegimeMultiplier, modulation.inventoryScaleFloor, modulation.inventoryScaleCap);
 
-        // Optional venue-bound paper seam; ordinary callers retain their existing sizing.
-        // Only round/clamp downward. A venue minimum never increases the engine target.
-        const constraints = this.deps.quoteConstraints?.(feature.tokenId, feature.marketId);
-        const sizeBound = (price: number, target: number, room: number) => constraints
-          ? sizeMakerQuote({ ...constraints, price, targetShares: target, maximumShares: Math.max(0, room),
-            maximumNotionalUSDC: this.config.maxNotionalPerOrderUsd })
-          : { size: null, reason: "INVALID_QUOTE_SIZING_INPUT" };
-        const boundedBid = this.deps.quoteConstraints ? sizeBound(bidPx, sizeBase * bidRegimeMultiplier, effectiveMaxInvBid - position) : null;
-        const boundedAsk = this.deps.quoteConstraints ? sizeBound(askPx, sizeBase * askRegimeMultiplier, effectiveMaxInvAsk + position) : null;
+        // Legacy share targets remain downward-only. The explicitly selected operating
+        // profile instead has a soft liability budget and an exact venue-minimum floor.
+        const sizeBound = (price: number, target: number, room: number, multiplier: number,
+          side: "BUY" | "SELL", replacementOrderId: number | null) => {
+          const constraints = this.deps.quoteConstraints?.(feature.tokenId, feature.marketId,
+            { walletId: wallet.walletId, side, replacementOrderId });
+          if (!constraints) return { size: null, reason: "INVALID_QUOTE_SIZING_INPUT" };
+          const maximumShares = Math.max(0, room);
+          if (constraints.budgetUSDC !== undefined) {
+            const hard = constraints.availableLiabilityUSDC ?? this.config.maxNotionalPerOrderUsd;
+            const result = sizeBudgetMakerQuote({ price,
+              baseBudgetUSDC: constraints.budgetUSDC * Math.max(0.1, wallet.sizeMultiplier || 1),
+              regimeMultiplier: multiplier, maximumShares, reservedShares: constraints.reservedShares,
+              maximumLiabilityUSDC: Number(hard) > this.config.maxNotionalPerOrderUsd ? this.config.maxNotionalPerOrderUsd : hard,
+              minimumShares: constraints.minimumShares, minimumNotionalUSDC: constraints.minimumNotionalUSDC,
+              shareIncrement: constraints.shareIncrement, feePerShareUSDC: constraints.feePerShareUSDC ?? "0" });
+            if ((side === "BUY" && this.config.enableBidQuotes) || (side === "SELL" && this.config.enableAskQuotes))
+              this.deps.logger.info({ tokenId: feature.tokenId, walletId: wallet.walletId, side, price,
+                sizing: result }, "maker_budget_sizing");
+            return result;
+          }
+          return sizeMakerQuote({ ...constraints, price, targetShares: target, maximumShares,
+            maximumNotionalUSDC: this.config.maxNotionalPerOrderUsd });
+        };
+        const boundedBid = this.deps.quoteConstraints ? sizeBound(bidPx, sizeBase * bidRegimeMultiplier,
+          effectiveMaxInvBid - position, bidRegimeMultiplier, "BUY", openBidOrder?.id ?? null) : null;
+        const boundedAsk = this.deps.quoteConstraints ? sizeBound(askPx, sizeBase * askRegimeMultiplier,
+          effectiveMaxInvAsk + position, askRegimeMultiplier, "SELL", openAskOrder?.id ?? null) : null;
         const bidSize = boundedBid?.size ?? rawBidSize;
         const askSize = boundedAsk?.size ?? rawAskSize;
         const bidSizeValid = !this.deps.quoteConstraints || boundedBid?.size != null;
         const askSizeValid = !this.deps.quoteConstraints || boundedAsk?.size != null;
 
+        const penaltyCapacity = this.config.inventoryPenaltyCapacityShares ?? 1;
+        if (!Number.isFinite(penaltyCapacity) || penaltyCapacity <= 0) throw Error("maker:invalid_inventory_penalty_capacity");
         const invPenaltyBid =
-          Math.max(0, Math.abs(position + bidSize) - Math.abs(position)) * this.config.inventoryLambdaBps;
+          Math.max(0, Math.abs(position + bidSize) - Math.abs(position)) * this.config.inventoryLambdaBps / penaltyCapacity;
         const invPenaltyAsk =
-          Math.max(0, Math.abs(position - askSize) - Math.abs(position)) * this.config.inventoryLambdaBps;
+          Math.max(0, Math.abs(position - askSize) - Math.abs(position)) * this.config.inventoryLambdaBps / penaltyCapacity;
         const expectedRebateBidBps = estimateExpectedMakerRebateBps({
           marketProfile,
           shares: bidSize,
@@ -834,6 +858,15 @@ export class MakerLoop {
             pHat,
             size: askSize
           });
+        }
+
+        if (boundedBid && "usedVenueFloor" in boundedBid && this.config.enableBidQuotes
+          && bidSizeValid && bidRegime.allowed && !canBid) {
+          if (openBidOrder) await this.cancelOpenOrder(openBidOrder, ts);
+          this.logSkipDecision({ ts, tokenId: feature.tokenId, walletId: wallet.walletId, kind: "MAKER_BID",
+            decisionReason: !bidEvDecision.ok ? "operating_ev_block" : !bidMarketGate.ok ? "operating_market_block"
+              : !bidEdgeSanity.ok ? "operating_edge_sanity_block" : "operating_inventory_block",
+            mid, spread, bid, ask, bidDepth, askDepth, pHat, size: bidSize });
         }
 
         if (canBid) {

@@ -12,6 +12,8 @@ type Clock = StartupClock;
 export const PAPER_PROFILES = Object.freeze({
   INITIAL_2_USDC: Object.freeze({ perOrderUSDC: "2", totalLossUSDC: "2", exposureUSDC: "4", quoteSizeTargetShares: null }),
   OWNER_6_USDC: Object.freeze({ perOrderUSDC: "6", totalLossUSDC: "6", exposureUSDC: "6", quoteSizeTargetShares: null }),
+  OPERATING_BURST_V1: Object.freeze({ cashUSDC: "100", perOrderUSDC: "20", totalLossUSDC: "40", exposureUSDC: "40",
+    inventoryLimitShares: 200, budgetUSDC: 20, quoteSizeTargetShares: null }),
 });
 export type PaperProfile = keyof typeof PAPER_PROFILES;
 type ContractFields = {
@@ -70,8 +72,10 @@ export function installStartupSink(db: Database.Database, input: StartupContract
   requireThat(isolatedDatabases.has(db), "exclusive_offline_database_required");
   let contract: StartupContract = JSON.parse(JSON.stringify(input));
   const profileName = contract.paperProfile ?? "INITIAL_2_USDC";
-  requireThat(profileName === "INITIAL_2_USDC" || profileName === "OWNER_6_USDC", "unsupported_paper_profile");
+  requireThat(profileName === "INITIAL_2_USDC" || profileName === "OWNER_6_USDC" || profileName === "OPERATING_BURST_V1", "unsupported_paper_profile");
   const limits = PAPER_PROFILES[profileName];
+  const operating = profileName === "OPERATING_BURST_V1";
+  const cashUSDC = "cashUSDC" in limits ? limits.cashUSDC : "10";
   requireThat(contract.purpose === "SYNTHETIC_OFFLINE_ENGINEERING"
     || contract.purpose === "PROSPECTIVE_PAPER_ENGINEERING", "unsupported_purpose");
   if (contract.purpose === "PROSPECTIVE_PAPER_ENGINEERING") {
@@ -102,7 +106,7 @@ export function installStartupSink(db: Database.Database, input: StartupContract
   const precommitChecks: { clientOrderId: string; clock: Clock; sourceHash: string; sourceFrontier: number | null }[] = [];
   const observations: StartupContract[] = [JSON.parse(JSON.stringify(contract))];
   let last = now();
-  const opening = JSON.stringify({ cashUSDC: "10", shares: Object.fromEntries(contract.tokens.map(t => [t, "0"])),
+  const opening = JSON.stringify({ cashUSDC, shares: Object.fromEntries(contract.tokens.map(t => [t, "0"])),
     paperProfile: profileName, limits,
     funding: contract.purpose === "SYNTHETIC_OFFLINE_ENGINEERING" ? "synthetic_offline_only" : "explicit_synthetic_paper_opening",
     inputEvidence: contract.purpose === "SYNTHETIC_OFFLINE_ENGINEERING" ? "OFFLINE_FIXTURE" : "CURRENT_PUBLIC_CAPTURE",
@@ -135,6 +139,7 @@ export function installStartupSink(db: Database.Database, input: StartupContract
     requireThat(utcAge >= 0 && utcAge <= 1000 && monoAge >= 0 && monoAge <= 1000
       && Math.abs(utcAge - monoAge) <= 100 && b.venueUtc <= b.receipt.utc
       && b.receipt.utc - b.venueUtc <= 1000, "stale_or_inconsistent_clock");
+    if (operating) requireThat(clock.utc - b.venueUtc <= 1000, "total_venue_age");
     requireThat(contract.fee && typeof contract.fee.provenance === "string" && contract.fee.provenance.trim(), "unknown_fee_bound");
     decimal(contract.fee.perShareUSDC);
     const p = decimal(o.price), q = decimal(o.size), tick = decimal(b.tick), lot = decimal(b.lot), minimum = decimal(b.minimum);
@@ -154,7 +159,9 @@ export function installStartupSink(db: Database.Database, input: StartupContract
     const own = liability(o), total = own + existing.reduce((sum, row) => sum + liability(row), 0n);
     requireThat(own <= decimal(limits.perOrderUSDC) * SCALE, "order_cap");
     requireThat(total <= decimal(limits.totalLossUSDC) * SCALE && total <= decimal(limits.exposureUSDC) * SCALE
-      && total <= 10n * USD, "aggregate_pending_loss");
+      && total <= decimal(cashUSDC) * SCALE, "aggregate_pending_loss");
+    if (operating) requireThat(q + existing.reduce((sum, row) => sum + decimal(row.size), 0n)
+      <= BigInt(PAPER_PROFILES.OPERATING_BURST_V1.inventoryLimitShares) * SCALE, "pending_inventory_cap");
     return { ...clock };
   }
   // JSON binds actual persisted row fields; rejection receipts survive engine transaction rollback.
@@ -197,7 +204,7 @@ export function installStartupSink(db: Database.Database, input: StartupContract
     rejections,
     /** Refresh causal book evidence only while no accepted quote can carry a liability. */
     updateObservation(nextInput: StartupContract) {
-      requireThat(pending() === 0n && (db.prepare("SELECT COUNT(*) AS n FROM shadow_fills").get() as any).n === 0,
+      requireThat((operating || pending() === 0n) && (db.prepare("SELECT COUNT(*) AS n FROM shadow_fills").get() as any).n === 0,
         "observation_with_pending_liability");
       const next: StartupContract = JSON.parse(JSON.stringify(nextInput));
       const immutable = (c: StartupContract) => JSON.stringify({ ...c, sourceFrontier: null,
@@ -226,9 +233,11 @@ export function installStartupSink(db: Database.Database, input: StartupContract
     },
     cancelAll() {
       requireThat((db.prepare("SELECT COUNT(*) AS n FROM shadow_fills").get() as any).n === 0, "unexpected_fill");
-      db.prepare("UPDATE shadow_orders SET status='CANCELLED',last_update_ts=? WHERE status='OPEN'").run(now().utc);
+      db.prepare(operating
+        ? "UPDATE shadow_orders SET status='CANCELLED',last_update_ts=MAX(last_update_ts,?) WHERE status='OPEN'"
+        : "UPDATE shadow_orders SET status='CANCELLED',last_update_ts=? WHERE status='OPEN'").run(now().utc);
       requireThat(pending() === 0n, "terminal_liability");
-      return { syntheticCashUSDC: "10", shares: Object.fromEntries(contract.tokens.map(t => [t, "0"])),
+      return { syntheticCashUSDC: cashUSDC, shares: Object.fromEntries(contract.tokens.map(t => [t, "0"])),
         pendingLiabilityUSDC: "0", fills: 0, paidFeesUSDC: null, rewardsUSDC: null, settlementUSDC: null, profitUSDC: null };
     }
   };
@@ -243,18 +252,33 @@ export function createIsolatedMaker(db: Database.Database, config: any, logger: 
   const belief = new BeliefEngine([new MicrostructureBeliefProvider()], config.belief, { sqlite: db, logger });
   const getContract = installedContracts.get(db)!;
   const limits = PAPER_PROFILES[getContract().paperProfile ?? "INITIAL_2_USDC"];
+  const operating = getContract().paperProfile === "OPERATING_BURST_V1";
   const engine = new MakerLoop({ ...config.makerEv, ...config.fees,
     intervalMs: 10000, orderTtlMs: 5000, executionMode: "PAPER", marketScope: "PROFILE_KNOWN_ONLY",
     regimeModulation: config.regimeGating.modulation,
     // Registered scope overrides only; no change to ordinary EV/flow/belief/regime policy.
     quoteSize: limits.quoteSizeTargetShares ?? config.makerEv.quoteSize,
+    inventoryPenaltyCapacityShares: operating ? PAPER_PROFILES.OPERATING_BURST_V1.inventoryLimitShares : undefined,
+    maxInventoryAbs: operating ? PAPER_PROFILES.OPERATING_BURST_V1.inventoryLimitShares : config.makerEv.maxInventoryAbs,
     maxNotionalPerOrderUsd: Number(limits.perOrderUSDC), enableBidQuotes: true, enableAskQuotes: false,
     rebateShareAssumption: 0, liquidityRewardBpsWhenScoring: 0 }, { sqlite: db, logger, belief, regimeGate: gate,
-    quoteConstraints: getContract().paperProfile === "OWNER_6_USDC" ? (tokenId, marketId) => {
+    quoteConstraints: getContract().paperProfile === "OWNER_6_USDC" || operating ? (tokenId, marketId, context) => {
       const c = getContract();
       if (c.market !== marketId || c.book.token !== tokenId) return null;
-      return { minimumShares: c.book.minimumShares ?? (c.book.minimumUnit !== "USDC_NOTIONAL" ? c.book.minimum : "0"),
+      const terms = { minimumShares: c.book.minimumShares ?? (c.book.minimumUnit !== "USDC_NOTIONAL" ? c.book.minimum : "0"),
         minimumNotionalUSDC: c.book.minimumUnit === "USDC_NOTIONAL" ? c.book.minimum : "0", shareIncrement: c.book.lot };
+      if (!operating) return terms;
+      const others = (db.prepare("SELECT id,token_id,wallet_id,side,size,price FROM shadow_orders WHERE status IN ('PENDING','OPEN','PARTIAL')").all() as any[])
+        .filter(o => !(o.id === context?.replacementOrderId && o.wallet_id === context?.walletId
+          && o.token_id === tokenId && o.side === context?.side));
+      const reserved = others.reduce((sum, o) => sum + decimal(o.size) * (decimal(o.price) + decimal(c.fee!.perShareUSDC)), 0n);
+      const ceiling = [decimal(limits.perOrderUSDC) * SCALE, decimal(limits.totalLossUSDC) * SCALE - reserved,
+        decimal(limits.exposureUSDC) * SCALE - reserved, decimal("100") * SCALE - reserved].reduce((a,b) => a < b ? a : b);
+      const asUSD = (n: bigint) => { const v = n < 0n ? 0n : n; return (v / USD).toString() + "." + (v % USD).toString().padStart(18,"0"); };
+      return { ...terms, budgetUSDC: PAPER_PROFILES.OPERATING_BURST_V1.budgetUSDC,
+        availableLiabilityUSDC: asUSD(ceiling), feePerShareUSDC: c.fee!.perShareUSDC,
+        reservedShares: (() => { const n = others.reduce((sum,o) => sum + decimal(o.size), 0n);
+          return (n / SCALE).toString() + "." + (n % SCALE).toString().padStart(9,"0"); })() };
     } : undefined });
   return { tick: () => (engine as any).tick() as Promise<void>, getGateDiagnostics: () => gate.getLoadDiagnostics() };
 }
