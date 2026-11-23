@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { createOperatingSourceState, OPERATING_TICK_SIZE_RESYNC } from "../../scripts/research/maker_operating_source_bridge";
+import { BookStore } from "../../packages/book/src/index";
 import { deriveMakerStartupInputs, type BridgeStreamItem, type MakerStartupSourceInput } from "../../scripts/research/maker_startup_source_bridge";
 import type { StartupClock } from "../../scripts/research/maker_quote_startup";
 
@@ -60,6 +61,57 @@ function comparePrefixes(stream: BridgeStreamItem[]) {
 }
 
 describe("incremental original-token observation state", () => {
+  const sibling = bid({asset_id:"999",side:"SELL",price:"0.53",best_bid:"0.46",best_ask:"0.53"});
+  const stale = (changes = [bid(),sibling], extra: Record<string,unknown> = {}) => ({
+    event_type:"price_change",market:condition,timestamp:String(start+49),price_changes:changes,...extra,
+  });
+  it("stops before applying a valid singleton stale delta and permanently closes the old book", () => {
+    const state=createOperatingSourceState(fixture());
+    const older=frame(65,stale([bid({price:"0.48",best_bid:"0.48"}),sibling]));
+    expect(()=>deriveMakerStartupInputs({...fixture(),stream:[full(60),older],decision:at(65)}))
+      .toThrow(/^maker_source:backdated_delta$/);
+    state.process(full(60));
+    const prior=state.snapshot(at(60)), apply=vi.spyOn(BookStore.prototype,"applyDelta");
+    // The older delta's advertised BBO differs from the current snapshot.
+    // Its historical depth cannot be reconstructed by overwriting current state.
+    const signal=/^maker_source:validated_backdated_delta$/;
+    try {
+      expect(()=>state.process(older)).toThrow(signal);
+      expect(apply).not.toHaveBeenCalled();
+      for (const read of [()=>state.bookStatus(at(65)),()=>state.snapshot(at(65)),
+        ()=>state.process(full(70)),()=>state.process(sample(75))]) expect(read).toThrow(signal);
+      expect(prior.book).toMatchObject({bid:"0.47",receipt:at(60),venueUtc:start+60});
+    } finally { apply.mockRestore(); }
+  });
+  it.each([
+    ["backdated_delta_mixed_frame", [stale(),{event_type:"book",market:condition,asks:"malformed"}]],
+    ["backdated_delta_duplicate_level", stale([bid(),bid()])],
+    ["backdated_delta_bbo",stale([bid({best_bid:"0.55"})])],
+    ["backdated_delta_bbo",stale([bid(),bid({price:"0.41",best_bid:"0.45"})])],
+    ["backdated_delta_bbo",stale([bid(),bid({asset_id:"999",best_bid:"0.70"})])],
+    ["backdated_delta_member_grid",stale([bid(),bid({asset_id:"999",price:"0.475"})])],
+    ["delta_before_market",stale(undefined,{timestamp:String(start-1)})],
+    ["future_venue_time",stale(undefined,{timestamp:String(start+66)})],
+    ["frame_market",stale(undefined,{market:"wrong"})],
+    ["delta_asset",stale([bid({asset_id:"unknown"}),bid()])],
+    ["delta_side",stale([bid(),bid({asset_id:"999",side:"BAD"})])],
+    ["decimal_format",stale([bid({size:"-1"})])],
+    ["delta_price_grid",stale([bid({price:"0.475"})])],
+    ["string_required",stale([bid({hash:""})])],
+    ["delta_tick_context",stale(undefined,{tick_size:"0.001"})],
+  ] as const)("latches fatal %s without a clean metadata resync", (reason,message) => {
+    const state=createOperatingSourceState(fixture()); state.process(full(60));
+    const expected=new RegExp("^maker_source:"+reason+"$");
+    expect(()=>state.process(frame(65,message))).toThrow(expected);
+    expect(()=>state.snapshot(at(65))).toThrow(expected);
+  });
+  it("leaves stale sibling-only deltas outside selected freshness and accepts an equal venue watermark", () => {
+    const state=createOperatingSourceState(fixture());
+    state.process(full(60)); state.process(frame(65,stale([sibling])));
+    expect(state.bookStatus(at(65)).book.receipt).toEqual(at(60));
+    state.process(frame(66,stale([bid()],{timestamp:String(start+60)})));
+    expect(state.bookStatus(at(66)).book.receipt).toEqual(at(66));
+  });
   const tickEvent = (overrides: Record<string,unknown> = {}) => ({
     event_type:"tick_size_change", market:condition, asset_id:token, old_tick_size:"0.01",
     new_tick_size:"0.001", timestamp:String(start+22), ...overrides,
@@ -187,8 +239,6 @@ describe("incremental original-token observation state", () => {
 
   const failures: [string, BridgeStreamItem[]][] = [
     ["ambiguous_duplicate_trade", [frame(20,trade(20)),frame(21,trade(20))]],
-    ["backdated_delta", [full(21), frame(25, {market:condition,event_type:"price_change",
-      timestamp:String(start+20),price_changes:[bid()]})]],
     ["empty_book_side", [full(20), full(25,19), frame(30,{...snapshot(30),asks:[],event_type:"book"})]],
     ["delta_asset", [full(20), delta(22,bid(),bid({asset_id:"invalid"}))]],
     ["delta_tick_context", [full(20), frame(22,{market:condition,event_type:"price_change",
@@ -245,6 +295,38 @@ describe("incremental original-token observation state", () => {
 });
 
 const v7 = join(process.cwd(), "reports/evidence/maker-startup-codex-20261123-v7-reanchor");
+const v3 = join(process.cwd(), "reports/evidence/maker-operating-owner28-20261123-v3/epoch-000005/source");
+it.skipIf(!existsSync(join(v3,"ledger.json")))("classifies the retained 11ms V3 stale delta without applying it", async () => {
+  const {selectCurrentBtcMarket} = await import("../../scripts/research/maker_paper_startup");
+  const read = (name: string) => readFileSync(join(v3,name),"utf8");
+  const ledgerRaw=read("ledger.json"), framesRaw=read("frames-000001.ndjson");
+  expect(hash(ledgerRaw)).toBe("ff1a4b96ae55907a9fc29bb5c445efd7ddcef77ec957900a9618abee6fe32318");
+  expect(hash(framesRaw)).toBe("5944c6ebb4ca87864869bcf932350e673b3c9a04b881f4631d4b901e1fc090c6");
+  const ledger=JSON.parse(ledgerRaw);
+  expect(ledger.termination.reason).toBe("Error: maker_source:backdated_delta");
+  const get=(name:string) => {
+    const receipt=ledger.httpProofs.find((h:{http:string})=>h.http===name);
+    const raw=read("http/"+name+".bin"); expect(hash(raw)).toBe(receipt.sha256);
+    return {raw,at:receipt.at,url:receipt.url};
+  };
+  const gamma=get("metadata"),tokenFee=get("fee"),selection=selectCurrentBtcMarket(gamma);
+  const state=createOperatingSourceState({gamma,selection,clobMarket:get("market"),clobBook:get("book"),
+    tokenFee,decision:tokenFee.at,topKLevels:200,originalLabel:selection.selected!.outcomes[0]!.label});
+  const frames=framesRaw.trimEnd().split("\n").map(line=>{
+    const row=JSON.parse(line),raw=Buffer.from(row.rawBase64,"base64").toString("utf8");
+    expect(hash(raw)).toBe(row.sha256);
+    return {kind:"frame" as const,raw,at:row.at};
+  });
+  expect(frames).toHaveLength(2); state.process(frames[0]!);
+  const before=state.bookStatus(frames[0]!.at);
+  expect(before.book.venueUtc-Number(JSON.parse(frames[1]!.raw).timestamp)).toBe(11);
+  const apply=vi.spyOn(BookStore.prototype,"applyDelta");
+  try {
+    expect(()=>state.process(frames[1]!)).toThrow(/^maker_source:validated_backdated_delta$/);
+    expect(apply).not.toHaveBeenCalled();
+    expect(()=>state.bookStatus(frames[1]!.at)).toThrow(/^maker_source:validated_backdated_delta$/);
+  } finally { apply.mockRestore(); }
+});
 // Source captures remain machine-local. In environments that retain the V7
 // evidence, bind the specific immutable manifest and actual recorded clocks.
 it.skipIf(!existsSync(join(v7, "ledger.json")))("matches all 13 retained V7 decision-prefix samples and the independently checked feature", () => {

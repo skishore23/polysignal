@@ -8,6 +8,7 @@ import { deriveMakerStartupInputs, type MakerStartupSourceInput, type BridgeStre
 type Derived = ReturnType<typeof deriveMakerStartupInputs>;
 export type OperatingSourceMetadata = Omit<MakerStartupSourceInput, "stream">;
 export const OPERATING_TICK_SIZE_RESYNC = "maker_source:validated_tick_size_change";
+export const OPERATING_BACKDATED_DELTA_RESYNC = "maker_source:validated_backdated_delta";
 const scale = 1_000_000_000n;
 // https://docs.polymarket.com/trading/place-orders#calculate-the-order-amounts
 // An announced grid can require new metadata even when the pinned decoder
@@ -130,12 +131,13 @@ export function createOperatingSourceState(
       rawSha256, anchorSha256: rawSha256, venueHash: hash };
     return { observation, snapshot: { tokenId: token, marketId: market, hash, bids, asks, ts: venueUtc, recvTsMs: at.utc } };
   }
-  function applyPriceChange(e: Record<string, unknown>, at: StartupClock, raw: string) {
+  function applyPriceChange(e: Record<string, unknown>, at: StartupClock, raw: string, singleton: boolean) {
     if (!Array.isArray(e.price_changes) || !e.price_changes.length) {
       bookInvalidation = "MISSING_PRICE_CHANGE_MEMBERS";
       return;
     }
     const venueUtc = venueTime(e.timestamp, at.utc);
+    const backdated = venueUtc < lastSelectedVenueUtc;
     const members = e.price_changes.map(value => {
       const c = object(value);
       check(identity.outcomes.some(o => o.token === c.asset_id), "delta_asset");
@@ -144,15 +146,28 @@ export function createOperatingSourceState(
       const bestBid = decimal(c.best_bid, true), bestAsk = decimal(c.best_ask, true);
       check(p.units > 0n && p.units < scale && bestBid.units <= scale && bestAsk.units <= scale, "delta_price_domain");
       string(c.hash); // Per-change hash is opaque. It is never substituted for a full book hash.
-      if (c.asset_id === token) check(p.units % tick.units === 0n && bestBid.units % tick.units === 0n
-        && bestAsk.units % tick.units === 0n, "delta_price_grid");
+      const onGrid = c.asset_id !== token && !backdated || (p.units % tick.units === 0n
+        && bestBid.units % tick.units === 0n && bestAsk.units % tick.units === 0n);
+      if (c.asset_id === token) check(onGrid, "delta_price_grid");
       return { selected: c.asset_id === token, side: c.side === "BUY" ? "bids" as const : "asks" as const,
-        price: p.n, size: q.n, bestBid: bestBid.n, bestAsk: bestAsk.n };
+        price: p.n, size: q.n, bestBid: bestBid.n, bestAsk: bestAsk.n, onGrid };
     });
     const selected = members.filter(c => c.selected);
     if (!selected.length) return;
     if (e.tick_size !== undefined) check(decimal(e.tick_size, true).units === tick.units, "delta_tick_context");
-    check(venueUtc >= lastSelectedVenueUtc, "backdated_delta");
+    check(venueUtc >= identity.start, "delta_before_market");
+    if (backdated) {
+      check(singleton, "backdated_delta_mixed_frame");
+      const keys = selected.map(c => c.side + ":" + c.price);
+      check(new Set(keys).size === keys.length, "backdated_delta_duplicate_level");
+      const first = selected[0]!;
+      check(members.every(c => c.onGrid), "backdated_delta_member_grid");
+      check(members.every(c => c.bestBid < c.bestAsk)
+        && selected.every(c => c.bestBid === first.bestBid && c.bestAsk === first.bestAsk), "backdated_delta_bbo");
+      // A stale change has no matching historical book here. Its BBO cannot
+      // certify depth against the newer book. Stop before touching either state.
+      throw new Error(OPERATING_BACKDATED_DELTA_RESYNC);
+    }
     lastSelectedVenueUtc = venueUtc;
     if (!streamAnchored) { bookInvalidation = "WS_SNAPSHOT_REQUIRED_BEFORE_DELTA"; return; }
     if (bookInvalidation !== null) return; // Only a complete later snapshot repairs a broken chain.
@@ -214,7 +229,7 @@ export function createOperatingSourceState(
         book = next.observation;
         streamAnchored = true; bookInvalidation = null; lastSelectedVenueUtc = book.venueUtc;
       } else if (e.event_type === "price_change") {
-        applyPriceChange(e, item.at, item.raw);
+        applyPriceChange(e, item.at, item.raw, messages.length === 1);
       } else if (e.event_type === "tick_size_change") {
         // Raw market channel schema in https://docs.polymarket.com/market-data/realtime-data
         check(messages.length === 1, "tick_change_mixed_frame");

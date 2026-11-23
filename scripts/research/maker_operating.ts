@@ -17,7 +17,7 @@ export const sha = (x: string | Buffer) => createHash("sha256").update(x).digest
 const json = (x: unknown) => JSON.stringify(x, null, 2) + "\n";
 function check(x: unknown, why: string): asserts x { if (!x) throw Error("maker_operating:" + why); }
 export const OPERATING_PROTOCOL = {
-  schema: "ORDINARY_PAPER_MAKER_OPERATING_V3", venue: "POLYMARKET_ONLY", profile: "OPERATING_BURST_V1",
+  schema: "ORDINARY_PAPER_MAKER_OPERATING_V4", venue: "POLYMARKET_ONLY", profile: "OPERATING_BURST_V1",
   account: PAPER_PROFILES.OPERATING_BURST_V1, sizing: "soft20USDC*positive_regime; exact legal venue floor within hard limits",
   inventoryPreference: "configured K50bps at full200share capacity; changed prospective convention",
   noFills: true, noLiveOrders: true, noPi: true, rewards: false, stopAtFirstQuote: false,
@@ -25,6 +25,7 @@ export const OPERATING_PROTOCOL = {
     maxAttemptsPerSlot: 3, retryBackoffMs: [2000,10000], metadataRetryBackoffMs: [15000,60000],
     metadataNotReady: "missing only observed volume/liquidity: no quote; bounded fresh retries, then next fixed slot; generic selection failure remains fatal",
     tickChange: "validated original-token tick event cancels and requires four fresh reads; never change grid in place",
+    oldDelta: "fully validated singleton old delta cancels and requires four fresh reads/history; never apply or continue the old chain",
     emptyBook: "cancel and fresh resync within existing attempts; malformed side schema remains correctness fault", rawFrameMaxBytes: 2097152,
     segmentBodyBytes: 8388608, segmentMessages: 20000, maxQueuedBytes: 8388608, maxQueuedMessages: 4000,
     maxTradesPerSlot: 20000, reconnect: "fresh explicit attempt; cancel and reset history; no continuous-gap claim" },
@@ -63,12 +64,14 @@ export function isUnavailableEmptyBook(error: unknown): boolean {
     || error.message === "operating:Error: maker_source:empty_book_side:";
 }
 /** Exact clean causes only: an archive/schema failure appended by cleanup stays fatal. */
-export function operatingUnavailableReason(error: unknown): "empty_book"|"metadata_not_ready"|"tick_size_change"|null {
+export function operatingUnavailableReason(error: unknown): "empty_book"|"metadata_not_ready"|"tick_size_change"|"backdated_delta"|null {
   if (!(error instanceof Error)) return null;
   if(isUnavailableEmptyBook(error))return "empty_book";
   if(error.message === "maker_operating:source_metadata:OBSERVED_MARKET_VOLUME_AND_LIQUIDITY")return "metadata_not_ready";
   if(error.message === "maker_source:validated_tick_size_change"
     || error.message === "operating:Error: maker_source:validated_tick_size_change:")return "tick_size_change";
+  if(error.message === "maker_source:validated_backdated_delta"
+    || error.message === "operating:Error: maker_source:validated_backdated_delta:")return "backdated_delta";
   return null;
 }
 function atomic(file: string, value: unknown) { const tmp = file + "." + randomUUID() + ".tmp"; writeFileSync(tmp,json(value),{flag:"wx",mode:0o600}); renameSync(tmp,file); }
