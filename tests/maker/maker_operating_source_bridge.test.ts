@@ -60,6 +60,14 @@ function comparePrefixes(stream: BridgeStreamItem[]) {
 }
 
 describe("incremental original-token observation state", () => {
+  it.each([{bad:null,why:"book_side_schema"},{bad:[{}],why:"decimal_type"},
+    {bad:[{price:"0.54",size:"0"}],why:"duplicate_or_empty_level"}])("rejects mixed empty/malformed snapshots before clean unavailability: $why",({bad,why})=>{
+    const f=fixture(), state=createOperatingSourceState(f);
+    const malformed={...snapshot(20),event_type:"book",bids:[],asks:bad};
+    expect(()=>state.process(frame(20,malformed))).toThrow(why);
+    const raw=JSON.parse(f.clobBook.raw);raw.bids=[];raw.asks=bad;f.clobBook.raw=JSON.stringify(raw);
+    expect(()=>createOperatingSourceState(f)).toThrow(why);
+  });
   it.each([null, {}, "not-an-array"])("classifies malformed initial book sides as correctness faults: %j", (bad) => {
     const f=fixture(), row=JSON.parse(f.clobBook.raw); row.bids=bad; f.clobBook.raw=JSON.stringify(row);
     expect(()=>createOperatingSourceState(f)).toThrow("book_side_schema");

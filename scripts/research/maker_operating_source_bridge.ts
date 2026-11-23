@@ -56,6 +56,15 @@ export function createOperatingSourceState(
   }
   const initialRestShape = object(JSON.parse(input.clobBook.raw));
   check(Array.isArray(initialRestShape.bids) && Array.isArray(initialRestShape.asks), "book_side_schema");
+  string(initialRestShape.hash);
+  const initialTick=decimal(initialRestShape.tick_size,true).units;
+  check(initialTick>0n,"snapshot_tick_context");
+  for(const side of [initialRestShape.bids,initialRestShape.asks]){
+    const seen=new Set<bigint>();
+    for(const raw of side){const level=object(raw),p=decimal(level.price,true),q=decimal(level.size,true);
+      check(p.units>0n && p.units<scale && p.units%initialTick===0n,"price_grid");
+      check(q.units>0n && !seen.has(p.units),"duplicate_or_empty_level");seen.add(p.units);}
+  }
   const base = deriveMakerStartupInputs({ ...input, stream: [] });
   const { identity } = base;
   const { token, market, condition } = identity;
@@ -93,9 +102,9 @@ export function createOperatingSourceState(
     if (row.version !== undefined) check(v2 && row.version === "v2", "unsupported_book_version");
     if (row.tick_size !== undefined) check(decimal(row.tick_size, true).units === tick.units, "snapshot_tick_context");
     const venueUtc = venueTime(row.timestamp, at.utc);
+    check(Array.isArray(row.bids) && Array.isArray(row.asks),"book_side_schema");
     const levels = (values: unknown) => {
       check(Array.isArray(values), "book_side_schema");
-      check(values.length > 0, "empty_book_side");
       const seen = new Set<bigint>();
       return values.map(v => {
         const level = object(v), p = price(level.price), size = decimal(level.size, true);
@@ -106,6 +115,7 @@ export function createOperatingSourceState(
     };
     const bids = levels(row.bids), asks = levels(row.asks);
     const hash = string(row.hash);
+    check(bids.length>0 && asks.length>0,"empty_book_side");
     const bid = bids.reduce((best, level) => Math.max(best, level.price), 0);
     const ask = asks.reduce((best, level) => Math.min(best, level.price), 1);
     check(bid < ask, "crossed_book");
