@@ -39,22 +39,31 @@ export type ClobWsClientArgs = {
   webSocketFactory?: (url: string) => WebSocket;
 };
 
+// Missing fields and nonnumeric JSON values must not acquire numeric meaning
+// through Number(null), Number("") or Number(true). Explicit numeric zero stays valid.
+const parseMarketNumber = (raw: unknown): number | null => {
+  if (typeof raw !== "number" && typeof raw !== "string") return null;
+  if (typeof raw === "string" && raw.trim() === "") return null;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
+};
+
 const parseLevels = (raw: unknown): ClobWsLevel[] => {
   if (!Array.isArray(raw)) return [];
   const levels: ClobWsLevel[] = [];
   for (const item of raw) {
     if (Array.isArray(item) && item.length >= 2) {
-      const price = Number(item[0]);
-      const size = Number(item[1]);
-      if (Number.isFinite(price) && Number.isFinite(size)) {
+      const price = parseMarketNumber(item[0]);
+      const size = parseMarketNumber(item[1]);
+      if (price != null && size != null) {
         levels.push({ price, size });
       }
       continue;
     }
     if (typeof item === "object" && item !== null) {
-      const price = Number((item as { price?: unknown }).price);
-      const size = Number((item as { size?: unknown }).size);
-      if (Number.isFinite(price) && Number.isFinite(size)) {
+      const price = parseMarketNumber((item as { price?: unknown }).price);
+      const size = parseMarketNumber((item as { size?: unknown }).size);
+      if (price != null && size != null) {
         levels.push({ price, size });
       }
     }
@@ -67,21 +76,21 @@ const parseChanges = (raw: unknown): ClobWsPriceChange[] => {
   const changes: ClobWsPriceChange[] = [];
   for (const item of raw) {
     if (Array.isArray(item) && item.length >= 3) {
-      const price = Number(item[0]);
-      const size = Number(item[1]);
+      const price = parseMarketNumber(item[0]);
+      const size = parseMarketNumber(item[1]);
       const side = item[2] === "SELL" ? "SELL" : item[2] === "BUY" ? "BUY" : null;
-      if (Number.isFinite(price) && Number.isFinite(size) && side != null) {
+      if (price != null && size != null && side != null) {
         changes.push({ price, size, side });
       }
       continue;
     }
     if (typeof item === "object" && item !== null) {
-      const price = Number((item as { price?: unknown }).price);
-      const size = Number((item as { size?: unknown }).size);
+      const price = parseMarketNumber((item as { price?: unknown }).price);
+      const size = parseMarketNumber((item as { size?: unknown }).size);
       const rawSide = (item as { side?: unknown }).side;
       const side = rawSide === "SELL" ? "SELL" : rawSide === "BUY" ? "BUY" : null;
       const hash = (item as { hash?: string | null }).hash ?? null;
-      if (Number.isFinite(price) && Number.isFinite(size) && side != null) {
+      if (price != null && size != null && side != null) {
         changes.push({ price, size, side, hash });
       }
     }
@@ -188,8 +197,8 @@ export class ClobWsClient {
       }
 
       if (eventType === "last_trade_price") {
-        const price = Number(msg.price);
-        const size = Number(msg.size);
+        const price = parseMarketNumber(msg.price);
+        const size = parseMarketNumber(msg.size);
         const side = msg.side === "SELL" ? "SELL" : msg.side === "BUY" ? "BUY" : null;
         const tsRaw =
           typeof msg.timestamp === "number"
@@ -212,7 +221,7 @@ export class ClobWsClient {
         const timestamp = parsedTimestamp != null && Number.isSafeInteger(parsedTimestamp) && parsedTimestamp >= 0
           ? parsedTimestamp
           : null;
-        if (!Number.isFinite(price) || !Number.isFinite(size) || side == null) return;
+        if (price == null || size == null || side == null) return;
         this.handlers.onTrade?.({
           tokenId,
           marketId: msg.market ?? null,
