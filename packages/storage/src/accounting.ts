@@ -373,11 +373,19 @@ export function getAccountingReport(
         AND e.order_id = f.order_id AND e.token_id = o.token_id AND e.side = o.side
         AND e.gross_shares = f.size AND e.price = f.price AND e.event_ts = f.ts
         AND e.event_ts <= ? AND e.receipt_ts <= ?
+        AND NOT EXISTS (
+          SELECT 1 FROM accounting_events c
+          WHERE c.account_key = e.account_key AND c.kind = 'CORRECTION'
+            AND c.corrects_event_key = e.event_key
+            AND c.finality IN ('SIMULATED', 'CONFIRMED')
+            AND c.event_ts <= ? AND c.receipt_ts <= ?
+        )
       WHERE o.execution_mode = 'SHADOW' AND ('wallet:' || COALESCE(o.wallet_id, 'unattributed')) = ?
         AND f.ts <= ? AND e.id IS NULL ORDER BY f.id`,
       )
       .all(
-        accountKey, valuationTs, asOfReceiptTs ?? Number.MAX_SAFE_INTEGER, accountKey, valuationTs,
+        accountKey, valuationTs, asOfReceiptTs ?? Number.MAX_SAFE_INTEGER,
+        valuationTs, asOfReceiptTs ?? Number.MAX_SAFE_INTEGER, accountKey, valuationTs,
       ) as Array<{
         fillId: number;
         tokenId: string;

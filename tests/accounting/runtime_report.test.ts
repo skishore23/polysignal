@@ -519,6 +519,78 @@ describe('runtime accounting event to report', () => {
     },
   );
 
+  it.each(['CONFIRMED', 'SIMULATED', 'FAILED', 'PROVISIONAL', 'late-event', 'late-receipt'] as const)(
+    'uses only active postings to reconcile retained fills with a %s correction',
+    async (scenario) => {
+      const db = await createTempDb();
+      opened.push(db);
+      postAccountingEvent(db.sqlite, event({
+        eventKey: 'opening', kind: 'OPENING', sourceRef: 'opening', cashDelta: 10,
+      }));
+      const orderId = Number(db.sqlite.prepare(`INSERT INTO shadow_orders
+        (ts, wallet_id, token_id, side, kind, execution_mode)
+        VALUES (?, 7, 't', 'BUY', 'MAKER_BID', 'SHADOW')`).run(base).lastInsertRowid);
+      const fillId = Number(db.sqlite.prepare(`INSERT INTO shadow_fills
+        (ts, order_id, price, size, method) VALUES (?, ?, 0.5, 1, 'trade_match')`)
+        .run(base, orderId).lastInsertRowid);
+      const fillKey = `shadow-fill:${fillId}`;
+      postAccountingEvent(db.sqlite, event({
+        eventKey: fillKey, kind: 'FILL', sourceRef: String(fillId),
+        orderId, tokenId: 't', side: 'BUY', grossShares: 1, netSharesDelta: 1,
+        price: 0.5, cashDelta: -0.5, feeAsset: 'USDC', feeAmount: 0,
+        feeEvidence: 'MODELED', finality: 'SIMULATED',
+      }));
+      db.sqlite.prepare("INSERT INTO latest_features (token_id, ts, mid) VALUES ('t', ?, 0.5)")
+        .run(base);
+      const before = getAccountingReport(db.sqlite, 'wallet:7', base + 5, base + 5);
+      expect(before.complete).toBe(true);
+      expect(before.cash).toBe(9.5);
+      expect(before.positions[0]?.shares).toBe(1);
+      saveAccountingReport(db.sqlite, before);
+      postAccountingEvent(db.sqlite, event({
+        eventKey: 'void-fill', kind: 'CORRECTION', sourceRef: 'void-fill',
+        correctsEventKey: fillKey,
+        finality: scenario === 'FAILED' || scenario === 'PROVISIONAL' ? scenario :
+          scenario === 'SIMULATED' ? 'SIMULATED' : 'CONFIRMED',
+        eventTs: scenario === 'late-event' ? base + 10 : base + 1,
+        receiptTs: scenario === 'late-receipt' ? base + 10 : base + 1,
+      }));
+      const after = getAccountingReport(db.sqlite, 'wallet:7', base + 5, base + 5);
+      const removesPosting = scenario === 'CONFIRMED' || scenario === 'SIMULATED';
+      const gap = { code: 'UNPOSTED_SHADOW_FILL', fillId, tokenId: 't' };
+      if (removesPosting) {
+        // The original retained fill is still evidence even though its posting was voided.
+        expect(after.issues).toContainEqual(gap);
+        expect(after.complete).toBe(false);
+        expect(after.netPnl).toBeNull();
+        expect(after.cash).toBe(10);
+        expect(after.positions).toEqual([]);
+      } else {
+        expect(after.issues).not.toContainEqual(gap);
+        expect(after.cash).toBe(9.5);
+        expect(after.positions[0]?.shares).toBe(1);
+        expect(after.complete).toBe(scenario !== 'PROVISIONAL');
+        if (scenario === 'PROVISIONAL') {
+          expect(after.issues).toContainEqual({
+            code: 'PROVISIONAL_EVENT', eventKey: 'void-fill', tokenId: undefined,
+          });
+          expect(after.netPnl).toBeNull();
+        }
+      }
+      if (scenario === 'late-event' || scenario === 'late-receipt') {
+        expect(after.reportId).toBe(before.reportId);
+        const later = getAccountingReport(db.sqlite, 'wallet:7', base + 10, base + 10);
+        expect(later.issues).toContainEqual(gap);
+        expect(later.complete).toBe(false);
+        expect(later.netPnl).toBeNull();
+        expect(later.cash).toBe(10);
+        expect(later.positions).toEqual([]);
+      }
+      expect(getSavedAccountingReport(db.sqlite, before.reportId)).toEqual(before);
+      expect(db.sqlite.prepare('SELECT COUNT(*) AS n FROM shadow_fills').get()).toEqual({ n: 1 });
+    },
+  );
+
   it('rolls back a fill when its accounting posting fails', async () => {
     const db = await createTempDb();
     opened.push(db);

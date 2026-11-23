@@ -61,6 +61,8 @@ A matching event key only discharges a retained fill gap when it identifies a `F
 
 The posting must also match the retained order ID, token, side, gross size, price and event timestamp. The paper runtime persists these exact values together; an inconsistent or rounded import cannot silently complete reconciliation. Seven focused cases cover each mismatch and an exact match. A mismatched posting remains visible in the event trace, but the retained fill gap keeps `complete=false` and `netPnl=null`. This is a consistency check, not verification of the source, venue fills, funding or settlement.
 
+A retained fill also remains unposted when an eligible confirmed or simulated correction voids its matching posting. The gap check applies the fold's account, finality, event-time and receipt-time correction rules. Failed and out-of-scope corrections leave the posting active; a provisional correction leaves it active but makes the report incomplete. Six regression cases cover those distinctions, cutoff advancement and saved-report immutability. Voiding a posting does not erase the retained shadow fill or establish that its execution never occurred. Replacement/import reconciliation beyond the existing event-key contract remains unsupported.
+
 ## Not yet certified
 
 - Historical fee effective dates, venue rounding ties and fee payment assets are not verified by the current documentation alone. Prior reports must be treated as old-model scenarios until re-run with pinned historical rules; no old evidence is deleted.
