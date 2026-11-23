@@ -426,10 +426,17 @@ describe('runtime accounting event to report', () => {
       expect(after.netPnl).toBeNull();
       expect(after.reportId).toBe(before.reportId);
       const admitted = getAccountingReport(db.sqlite, 'wallet:7', base + 10, base + 10);
-      expect(admitted.complete).toBe(true);
       expect(admitted.cash).toBe(9.5);
       expect(admitted.positions[0]?.shares).toBe(1);
-      expect(admitted.netPnl).toBe(0);
+      if (lateField === 'receipt') {
+        expect(admitted.complete).toBe(true);
+        expect(admitted.netPnl).toBe(0);
+      } else {
+        // Advancing the scope cannot repair an event time that differs from the fill.
+        expect(admitted.issues).toContainEqual({ code: 'UNPOSTED_SHADOW_FILL', fillId, tokenId: 't' });
+        expect(admitted.complete).toBe(false);
+        expect(admitted.netPnl).toBeNull();
+      }
     },
   );
 
@@ -463,6 +470,52 @@ describe('runtime accounting event to report', () => {
       expect(report.netPnl).toBeNull();
       expect(report.cash).toBe(10);
       expect(report.positions).toEqual([]);
+    },
+  );
+
+  it.each(['order', 'token', 'side', 'size', 'price', 'time', 'exact'] as const)(
+    'reconciles retained fill identity and gross economics: %s',
+    async (mismatch) => {
+      const db = await createTempDb();
+      opened.push(db);
+      postAccountingEvent(db.sqlite, event({
+        eventKey: 'opening', kind: 'OPENING', sourceRef: 'opening', cashDelta: 10,
+        tokenId: 't', netSharesDelta: 1, price: 0.5,
+      }));
+      const orderId = Number(db.sqlite.prepare(`INSERT INTO shadow_orders
+        (ts, wallet_id, token_id, side, kind, execution_mode)
+        VALUES (?, 7, 't', 'BUY', 'MAKER_BID', 'SHADOW')`).run(base).lastInsertRowid);
+      const fillId = Number(db.sqlite.prepare(`INSERT INTO shadow_fills
+        (ts, order_id, price, size, method) VALUES (?, ?, 0.5, 1, 'trade_match')`)
+        .run(base, orderId).lastInsertRowid);
+      const q = mismatch === 'size' ? 2 : 1;
+      const p = mismatch === 'price' ? 0.6 : 0.5;
+      const side = mismatch === 'side' ? 'SELL' : 'BUY';
+      postAccountingEvent(db.sqlite, event({
+        eventKey: `shadow-fill:${fillId}`, kind: 'FILL', sourceRef: String(fillId),
+        orderId: mismatch === 'order' ? orderId + 1 : orderId,
+        tokenId: mismatch === 'token' ? 'other-token' : 't', side,
+        grossShares: q, netSharesDelta: side === 'BUY' ? q : -q,
+        price: p, cashDelta: side === 'BUY' ? -q * p : q * p,
+        feeAsset: 'USDC', feeAmount: 0, feeEvidence: 'MODELED', finality: 'SIMULATED',
+        eventTs: mismatch === 'time' ? base + 1 : base,
+      }));
+      for (const tokenId of ['t', 'other-token']) {
+        db.sqlite.prepare('INSERT INTO latest_features (token_id, ts, mid) VALUES (?, ?, 0.5)')
+          .run(tokenId, base + 1);
+      }
+      const report = getAccountingReport(db.sqlite, 'wallet:7', base + 1, base + 1);
+      if (mismatch === 'exact') {
+        expect(report.complete).toBe(true);
+        expect(report.issues).toEqual([]);
+        expect(report.cash).toBe(9.5);
+        expect(report.positions[0]?.shares).toBe(2);
+        expect(report.netPnl).toBe(0);
+      } else {
+        expect(report.issues).toContainEqual({ code: 'UNPOSTED_SHADOW_FILL', fillId, tokenId: 't' });
+        expect(report.complete).toBe(false);
+        expect(report.netPnl).toBeNull();
+      }
     },
   );
 

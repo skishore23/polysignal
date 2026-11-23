@@ -59,6 +59,8 @@ Unposted-fill detection uses the same event and receipt cutoffs as the event fol
 
 A matching event key only discharges a retained fill gap when it identifies a `FILL` posting for the same account with `SIMULATED` or `CONFIRMED` finality. A failed posting, a different account's posting or a non-fill event cannot establish that the retained fill has been accounted for. This check does not authenticate venue execution or reconstruct missing opening inventory.
 
+The posting must also match the retained order ID, token, side, gross size, price and event timestamp. The paper runtime persists these exact values together; an inconsistent or rounded import cannot silently complete reconciliation. Seven focused cases cover each mismatch and an exact match. A mismatched posting remains visible in the event trace, but the retained fill gap keeps `complete=false` and `netPnl=null`. This is a consistency check, not verification of the source, venue fills, funding or settlement.
+
 ## Not yet certified
 
 - Historical fee effective dates, venue rounding ties and fee payment assets are not verified by the current documentation alone. Prior reports must be treated as old-model scenarios until re-run with pinned historical rules; no old evidence is deleted.

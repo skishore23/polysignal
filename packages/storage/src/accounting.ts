@@ -361,7 +361,8 @@ export function getAccountingReport(
           valuationTs - row.ts <= MAX_MARK_AGE_MS;
         return { tokenId, ...position, mark: valid ? mark : null, markTs: row?.ts ?? null };
       });
-    // Only a successful fill posting in this account and scope can discharge a gap.
+    // A key alone is not reconciliation: match the retained fill's identity and
+    // gross economics as persisted by ShadowExecutionLoop, in the same scope.
     const legacy = sqlite
       .prepare(
         `SELECT f.id AS fillId, o.token_id AS tokenId FROM shadow_fills f
@@ -369,6 +370,8 @@ export function getAccountingReport(
         ON e.event_key = 'shadow-fill:' || f.id
         AND e.account_key = ? AND e.kind = 'FILL'
         AND e.finality IN ('SIMULATED', 'CONFIRMED')
+        AND e.order_id = f.order_id AND e.token_id = o.token_id AND e.side = o.side
+        AND e.gross_shares = f.size AND e.price = f.price AND e.event_ts = f.ts
         AND e.event_ts <= ? AND e.receipt_ts <= ?
       WHERE o.execution_mode = 'SHADOW' AND ('wallet:' || COALESCE(o.wallet_id, 'unattributed')) = ?
         AND f.ts <= ? AND e.id IS NULL ORDER BY f.id`,
