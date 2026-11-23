@@ -66,14 +66,26 @@ function read(capture: BridgeHttpCapture, expected: string): unknown {
   return JSON.parse(capture.raw);
 }
 function original(input: MakerStartupSourceInput) {
-  const page = read(input.gamma, gammaUrl);
   const receipt = object(input.selection);
   check(receipt.raw_body_sha256 === digest(input.gamma.raw) && receipt.status === "STRUCTURAL_METADATA_ONLY"
     && receipt.quote_phase_admitted === false, "gamma_selection_binding");
   const s = object(receipt.selected);
-  check(Array.isArray(page) && page.length <= 100 && Number.isInteger(s.raw_row_index)
-    && s.semantic_admission === false, "gamma_selection_shape");
-  const row = object(page[s.raw_row_index as number]);
+  check(Number.isInteger(s.raw_row_index) && s.semantic_admission === false, "gamma_selection_shape");
+  let row: Record<string, unknown>;
+  if (input.gamma.url === gammaUrl) {
+    const page = read(input.gamma, gammaUrl);
+    check(Array.isArray(page) && page.length <= 100, "gamma_selection_shape");
+    row = object(page[s.raw_row_index as number]);
+  } else {
+    // The admission binds the exact slot before the request. The bridge binds that
+    // route, the raw object and its projected row without re-serializing the receipt.
+    const slotSeconds = Math.floor(input.gamma.at.utc / 300_000) * 300;
+    const slotSlug = "btc-updown-5m-" + slotSeconds;
+    const slotUrl = "https://gamma-api.polymarket.com/markets/slug/" + slotSlug;
+    check(s.raw_row_index === 0, "gamma_slot_row_index");
+    row = object(read(input.gamma, slotUrl));
+    check(row.slug === slotSlug, "gamma_slot_slug");
+  }
   const protocolVersion = row.version;
   check(protocolVersion === "v1" || protocolVersion === "v2", "unsupported_gamma_market_version");
   if (s.protocol_version !== undefined) check(s.protocol_version === protocolVersion, "selection_version");

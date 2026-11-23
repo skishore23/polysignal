@@ -22,14 +22,18 @@ settlement, real profit or economic advantage follows from this trace.
 
 ## Prospective resource and source recipe
 
-This explicit V2 engineering recipe supersedes only the *unadmitted* earlier
-three-read proposal. The fourth read is required by the ordinary maker's
+The V2 engineering attempt fetched one broad metadata page and found no eligible
+current candidate. Its consumed admission and source evidence remain unchanged.
+This prospective V3 recipe fixes that demonstrated lookup problem using the
+documented exact-slug route. The fourth read is required by the ordinary maker's
 token-specific fee/profile gate. No earlier frozen evaluation or source attempt
 is rewritten. The old total-ingress assurance failure remains valid.
 
-1. One fixed public Gamma `/markets` response; local, deterministic first-page
-   selection of one currently open BTC five-minute Up/Down market. A no-match
-   describes only that page. No pagination, alternative source or retry.
+1. One public Gamma `/markets/slug/btc-updown-5m-{slotStartSeconds}` object.
+   The original five-minute slot, exact URL and request window are frozen before
+   acquisition. The returned slug, original start/end and current receipt must
+   agree; at least 60 seconds remain at metadata receipt. No broad discovery
+   page, pagination, alternative market/source or retry is attempted.
 2. An exact version-selected CLOB market read: `/markets/{condition}` for v1 or
    `/clob-markets/{condition}` for v2. No fallback between protocols.
 3. `/book?token_id={original-asset-id}`.

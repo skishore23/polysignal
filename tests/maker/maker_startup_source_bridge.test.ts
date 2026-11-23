@@ -64,6 +64,33 @@ describe("original-token maker source bridge", () => {
     expect(r.book).toMatchObject({minimum:"5",lot:"0.01",venueUtc:start+10});
     expect(r.fee?.perShareUSDC).toBe("0");
   });
+  function slotFixture() {
+    const f = v2fixture();
+    const row = JSON.parse(f.gamma.raw)[0];
+    f.gamma.raw = JSON.stringify(row, null, 2) + "\n";
+    f.gamma.url = "https://gamma-api.polymarket.com/markets/slug/" + row.slug;
+    (f.selection as { raw_body_sha256: string }).raw_body_sha256 = hash(f.gamma.raw);
+    return f;
+  }
+  it("binds the exact Gamma slot object, original bytes and V2 position to the current five-minute market", () => {
+    const f = slotFixture(), r = deriveMakerStartupInputs(f);
+    expect(r.identity).toMatchObject({market, condition, slug:"btc-updown-5m-"+start/1000, protocolVersion:"v2", token});
+    expect(r.sourceHashes.gamma).toBe(hash(f.gamma.raw));
+    expect(r.sourceHashes.gamma).not.toBe(hash(JSON.stringify([JSON.parse(f.gamma.raw)])));
+  });
+  const invalidSlots: [string,(f:MakerStartupSourceInput)=>void,string][] = [
+    ["other slot URL",f=>{f.gamma.url=f.gamma.url.replace(String(start/1000),String(start/1000+300));},"receipt_url"],
+    ["arbitrary URL query",f=>{f.gamma.url+="?x=1";},"receipt_url"],
+    ["slot row slug mismatch",f=>{changeRaw(f.gamma,row=>row.slug="btc-updown-5m-"+(start/1000-300));},"gamma_slot_slug"],
+    ["array served from slot URL",f=>{f.gamma.raw=JSON.stringify([JSON.parse(f.gamma.raw)]);},"object_required"],
+    ["object served from legacy list URL",f=>{f.gamma.url=fixture().gamma.url;},"gamma_selection_shape"],
+    ["nonzero slot row index",f=>{(f.selection as {selected:{raw_row_index:number}}).selected.raw_row_index=1;},"gamma_slot_row_index"],
+  ];
+  it.each(invalidSlots)("rejects %s", (_label, mutate, reason) => {
+    const f = slotFixture(); mutate(f);
+    (f.selection as {raw_body_sha256:string}).raw_body_sha256=hash(f.gamma.raw);
+    expect(()=>deriveMakerStartupInputs(f)).toThrow(reason);
+  });
   it("derives real rolling returns from chronologically sampled source books and preserves public trades", () => {
     const input = fixture();
     const stream = [...input.stream];

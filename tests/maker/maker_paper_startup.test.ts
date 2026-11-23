@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { RUN_PROTOCOL, inputHashes, runPaperStartup, selectCurrentBtcMarket, sha, validateAdmission } from "../../scripts/research/maker_paper_startup";
-import { STARTUP_METADATA_URL, type StartupSourceCapture, type RawCapture } from "../../scripts/research/maker_startup_capture";
+import { STARTUP_METADATA_URL, currentSlotMetadataUrl, type StartupSourceCapture, type RawCapture } from "../../scripts/research/maker_startup_capture";
 import { BeliefEngine } from "../../apps/worker/src/belief/BeliefEngine";
 
 const start = 1_800_000_000_000, condition = "0x" + "a".repeat(64);
@@ -63,7 +63,7 @@ function setup(minimum = 0.1, failure = false, offset = 0, lateSample?: number) 
   const hashes = inputHashes(), protocolSha256 = sha(text(RUN_PROTOCOL));
   const reviewFile = path.join(out, "authored-offline-review.json");
   writeFileSync(reviewFile, text({ decision: "APPROVE_BOUNDED_PAPER_STARTUP_RUN", runName, inputMode: "OFFLINE_FIXTURE", protocolSha256, inputSha256: hashes }));
-  const admission: any = { schema: "CODEX_PAPER_STARTUP_ADMISSION_V2", executionAdmitted: true,
+  const admission: any = { schema: "CODEX_PAPER_STARTUP_ADMISSION_V3", executionAdmitted: true,
     inputMode: "OFFLINE_FIXTURE", runName, notBeforeUtcMs: start + offset, expiresUtcMs: start + offset + 300000,
     protocolSha256, inputSha256: hashes, reviewFile, reviewSha256: sha(readFileSync(reviewFile)) };
   const file = path.join(out, "authored-admission.json"); writeFileSync(file, text(admission));
@@ -90,6 +90,23 @@ describe("complete no-fill startup wiring", () => {
     expect(() => validateAdmission({ ...f.admission, inputSha256: {} }, at(0), true)).toThrow("frozen_sources");
     expect(() => validateAdmission({ ...f.admission, runName: f.admission.runName + "-retry" }, at(0), true))
       .toThrow("review_source_or_scope");
+  });
+  it("binds the documented current-slot object rather than searching stale global rows", () => {
+    const raw = http(currentSlotMetadataUrl(start), market(), 0);
+    const s = selectCurrentBtcMarket(raw);
+    expect(s.status).toBe("STRUCTURAL_METADATA_ONLY");
+    expect(s.raw_body_sha256).toBe(sha(raw.raw));
+    expect(s.selected).toMatchObject({ slug: "btc-updown-5m-" + start / 1000, raw_row_index: 0, protocol_version: "v2" });
+    expect(() => selectCurrentBtcMarket({ ...raw, raw: JSON.stringify([market()]) })).toThrow("exact_slug_object");
+    expect(() => selectCurrentBtcMarket({ ...raw, url: currentSlotMetadataUrl(start + 300000) })).toThrow("current_slot_receipt");
+  });
+  it("rejects a production admission whose market URL or slot is not frozen to its window", () => {
+    const f = setup();
+    const current = { ...f.admission, inputMode: "CURRENT_PUBLIC_CAPTURE", marketStartUtcMs: start,
+      metadataUrl: STARTUP_METADATA_URL };
+    expect(() => validateAdmission(current, at(0))).toThrow("frozen_current_slot");
+    expect(() => validateAdmission({ ...current, metadataUrl: currentSlotMetadataUrl(start), marketStartUtcMs: start + 300000 }, at(0)))
+      .toThrow("frozen_current_slot");
   });
   it("uses canonical observed features, real MakerLoop and risk sink together, with offline-only evidence", async () => {
     const f = setup(); const date = vi.spyOn(Date, "now").mockImplementation(() => f.clock().utc);

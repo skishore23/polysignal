@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 import type Database from "better-sqlite3";
-import { StartupSourceCapture, STARTUP_METADATA_URL, type RawCapture } from "./maker_startup_capture";
+import { StartupSourceCapture, STARTUP_METADATA_URL, currentSlotMetadataUrl, type RawCapture } from "./maker_startup_capture";
 import { deriveMakerStartupInputs, type BridgeStreamItem } from "./maker_startup_source_bridge";
 import { createIsolatedMaker, installStartupSink, newIsolatedStartupDatabase,
   type StartupClock, type StartupContract } from "./maker_quote_startup";
@@ -15,8 +15,10 @@ export const sha = (raw: string | Buffer) => createHash("sha256").update(raw).di
 const json = (value: unknown) => JSON.stringify(value, null, 2) + "\n";
 function check(ok: unknown, reason: string): asserts ok { if (!ok) throw Error("paper_startup:" + reason); }
 export const RUN_PROTOCOL = {
-  schema: "CODEX_PAPER_STARTUP_PROTOCOL_V2", evidence: "PUBLIC_DEVELOPMENT_INPUTS_ONLY",
-  metadataUrl: STARTUP_METADATA_URL, versions: ["v1", "v2"], maxReads: 4,
+  schema: "CODEX_PAPER_STARTUP_PROTOCOL_V3", evidence: "PUBLIC_DEVELOPMENT_INPUTS_ONLY",
+  metadataRecipe: "CURRENT_FIVE_MINUTE_SLOT_BY_DOCUMENTED_SLUG",
+  metadataUrlTemplate: "https://gamma-api.polymarket.com/markets/slug/btc-updown-5m-{slotStartSeconds}",
+  versions: ["v1", "v2"], maxReads: 4,
   perReadBodyBytes: 2097152, maxBodyBytes: 8388608, maxMessages: 1000, maxWallMs: 300000,
   byteScope: "application response/message bodies; framing and TLS/network bytes unknown",
   account: { cashUSDC: "10", shares: "0", pending: "0", perOrderUSDC: "2", totalLossUSDC: "2", exposureUSDC: "4" },
@@ -57,8 +59,18 @@ function utc(x: unknown): number {
 }
 /** Structural first-page selection only; no claim about all markets or live order eligibility. */
 export function selectCurrentBtcMarket(capture: Pick<RawCapture, "raw" | "at" | "url">): MetadataSelection {
-  check(capture.url === STARTUP_METADATA_URL, "metadata_url");
-  const rows: unknown = JSON.parse(capture.raw); check(Array.isArray(rows) && rows.length <= 100, "one_page_schema");
+  const direct = /^https:\/\/gamma-api\.polymarket\.com\/markets\/slug\/btc-updown-5m-(\d{10})$/.exec(capture.url);
+  check(capture.url === STARTUP_METADATA_URL || direct, "metadata_url");
+  const decoded: any = JSON.parse(capture.raw);
+  if (direct) {
+    const slot = Number(direct[1]) * 1000;
+    check(capture.url === currentSlotMetadataUrl(slot) && slot <= capture.at.utc
+      && capture.at.utc <= slot + 240000, "current_slot_receipt");
+    check(decoded && typeof decoded === "object" && !Array.isArray(decoded)
+      && decoded.slug === "btc-updown-5m-" + direct[1], "exact_slug_object");
+  }
+  const rows: unknown = direct ? [decoded] : decoded;
+  check(Array.isArray(rows) && rows.length <= 100, "one_page_schema");
   const candidates: Selected[] = [], rejected: unknown[] = [];
   rows.forEach((r: any, i: number) => {
     try {
@@ -93,17 +105,23 @@ export function selectCurrentBtcMarket(capture: Pick<RawCapture, "raw" | "at" | 
     selected: candidates[0] ?? null, raw_body_sha256: sha(capture.raw), quote_phase_admitted: false, rejected };
 }
 
-type Admission = { schema: "CODEX_PAPER_STARTUP_ADMISSION_V2"; executionAdmitted: true;
+type Admission = { schema: "CODEX_PAPER_STARTUP_ADMISSION_V3"; executionAdmitted: true;
   inputMode: "CURRENT_PUBLIC_CAPTURE" | "OFFLINE_FIXTURE"; runName: string; notBeforeUtcMs: number; expiresUtcMs: number;
+  marketStartUtcMs?: number; metadataUrl?: string;
   protocolSha256: string; inputSha256: Record<string, string>; reviewFile: string; reviewSha256: string };
 export function validateAdmission(a: Admission, now: StartupClock, offlineInjection = false) {
-  check(a.schema === "CODEX_PAPER_STARTUP_ADMISSION_V2" && a.executionAdmitted === true, "independent_admission_required");
+  check(a.schema === "CODEX_PAPER_STARTUP_ADMISSION_V3" && a.executionAdmitted === true, "independent_admission_required");
   check(["CURRENT_PUBLIC_CAPTURE", "OFFLINE_FIXTURE"].includes(a.inputMode)
     && (!offlineInjection || a.inputMode === "OFFLINE_FIXTURE"), "test_transport_in_live_evidence");
   check(/^maker-startup-[a-zA-Z0-9_-]{1,80}$/.test(a.runName), "run_identity");
   check(Number.isSafeInteger(a.notBeforeUtcMs) && Number.isSafeInteger(a.expiresUtcMs)
     && a.notBeforeUtcMs <= now.utc && now.utc < a.expiresUtcMs
     && a.expiresUtcMs - a.notBeforeUtcMs > 0 && a.expiresUtcMs - a.notBeforeUtcMs <= RUN_PROTOCOL.maxWallMs, "frozen_window");
+  if (a.inputMode === "CURRENT_PUBLIC_CAPTURE")
+    check(Number.isSafeInteger(a.marketStartUtcMs) && a.marketStartUtcMs === Math.floor(a.notBeforeUtcMs / 300000) * 300000
+      && a.metadataUrl === currentSlotMetadataUrl(a.marketStartUtcMs!)
+      && a.notBeforeUtcMs <= a.marketStartUtcMs! + 240000 && a.expiresUtcMs <= a.marketStartUtcMs! + 300000,
+      "frozen_current_slot");
   check(a.protocolSha256 === sha(json(RUN_PROTOCOL)), "frozen_protocol");
   const hashes = inputHashes();
   check(Object.keys(a.inputSha256).length === REQUIRED_INPUTS.length
@@ -158,12 +176,13 @@ export async function runPaperStartup(admissionFile: string, test?: {
   const now = test?.clock ?? (() => ({ utc: Date.now(), mono: performance.now() }));
   validateAdmission(admission, now(), !!test);
   const out = path.join(ROOT, "reports/evidence", admission.runName);
-  const capture = test?.capture ?? new StartupSourceCapture({ ...RUN_PROTOCOL, expiresUtcMs: admission.expiresUtcMs }, now, out);
+  const capture = test?.capture ?? new StartupSourceCapture({ ...RUN_PROTOCOL, metadataUrl: admission.metadataUrl!,
+    expiresUtcMs: admission.expiresUtcMs }, now, out);
   const sourceClock = () => { const f = capture.observationFrontier();
     return { ...now(), sourceSequence: f.sequence, sourceAvailable: f.open }; };
   writeFileSync(path.join(out, "frozen-admission.json"), rawAdmission, { flag: "wx" });
   writeFileSync(path.join(out, "frozen-protocol.json"), json(RUN_PROTOCOL), { flag: "wx" });
-  const result: any = { schema: "CODEX_PAPER_STARTUP_RESULT_V2", inputMode: admission.inputMode,
+  const result: any = { schema: "CODEX_PAPER_STARTUP_RESULT_V3", inputMode: admission.inputMode,
     status: "STARTING", actualQuotes: 0, fills: 0, profitUSDC: null, actualAccountChargeUSD: null,
     admissionSha256: sha(rawAdmission), traces: [], startedAt: now() };
   const stream: BridgeStreamItem[] = [], seenTrades = new Set<string>();

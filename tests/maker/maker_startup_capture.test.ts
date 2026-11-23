@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import type { RequestOptions } from 'node:https';
 import type WebSocket from 'ws';
-import { STARTUP_METADATA_URL, StartupSourceCapture,
+import { STARTUP_METADATA_URL, currentSlotMetadataUrl, StartupSourceCapture,
   type StartupCapturePolicy, type CaptureMarket, type CaptureSocketOptions } from '../../scripts/research/maker_startup_capture';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -89,6 +89,62 @@ afterEach(() => {
 });
 
 describe('finite startup capture: offline injected transports only', () => {
+  it('reads exactly the frozen current-slot slug URL and retains the object response', async () => {
+    const metadataUrl = currentSlotMetadataUrl(EPOCH);
+    const h = harness({ metadataUrl }, [{ body: '{"slug":"btc-updown-5m-1800000000"}' }]);
+    const result = await h.capture.readMetadata();
+    expect(metadataUrl).toBe('https://gamma-api.polymarket.com/markets/slug/btc-updown-5m-1800000000');
+    expect(result.url).toBe(metadataUrl); expect(JSON.parse(result.raw).slug).toBe('btc-updown-5m-1800000000');
+    expect(h.calls.map((x) => x.url)).toEqual([metadataUrl]);
+    expect(h.capture.ledger().policy.metadataUrl).toBe(metadataUrl);
+    await expect(h.capture.readMetadata()).rejects.toThrow('read_duplicate_or_concurrent');
+    expect(h.calls).toHaveLength(1);
+  });
+
+  it.each([0, 240_000])('admits the exact inclusive slot boundary with at least 60s remaining (%i)', async (elapsed) => {
+    const h = harness({ metadataUrl: currentSlotMetadataUrl(EPOCH) });
+    await vi.advanceTimersByTimeAsync(elapsed); await h.capture.readMetadata(); expect(h.calls).toHaveLength(1);
+  });
+
+  it('rejects a future slot before any request without selecting a substitute slot', async () => {
+    const h = harness({ metadataUrl: currentSlotMetadataUrl(EPOCH + 300_000) });
+    await expect(h.capture.readMetadata()).rejects.toThrow('metadata_slot_not_current_or_less_than_60s');
+    expect(h.calls).toHaveLength(0); expect(h.capture.ledger().status).toBe('FAILED');
+  });
+
+  it.each([240_001, 299_999])('rejects a slot with less than 60s remaining (%i), without a list fallback', async (elapsed) => {
+    const h = harness({ metadataUrl: currentSlotMetadataUrl(EPOCH) });
+    await vi.advanceTimersByTimeAsync(elapsed);
+    await expect(h.capture.readMetadata()).rejects.toThrow('metadata_slot_not_current_or_less_than_60s');
+    expect(h.calls).toHaveLength(0); expect(h.capture.ledger().policy.metadataUrl).toBe(currentSlotMetadataUrl(EPOCH));
+  });
+
+  it('rejects a current-slot recipe whose authority outlives that slot', () => {
+    vi.setSystemTime(EPOCH + 1000);
+    expect(() => harness({ metadataUrl: currentSlotMetadataUrl(EPOCH), expiresUtcMs: EPOCH + 300_001 }))
+      .toThrow('invalid_policy_or_clock');
+  });
+
+  it.each([
+    'https://gamma-api.polymarket.com/markets/slug/btc-updown-5m-1800000001',
+    'https://gamma-api.polymarket.com/markets/slug/btc-updown-5m-1800000000?limit=1',
+    'https://gamma-api.polymarket.com/markets/slug/btc-updown-5m-1800000000#x',
+    'https://gamma-api.polymarket.com/markets/slug/btc-updown-5m-1800000000\n',
+    'https://gamma-api.polymarket.com/markets/slug/btc-updown-5m-01800000000',
+    'https://gamma-api.polymarket.com/markets/slug/btc-updown-5m-0100000200',
+    'https://gamma-api.polymarket.com:443/markets/slug/btc-updown-5m-1800000000',
+    'http://gamma-api.polymarket.com/markets/slug/btc-updown-5m-1800000000',
+    'https://gamma-api.polymarket.com/markets/slug/eth-updown-5m-1800000000',
+    'https://elsewhere.invalid/markets/slug/btc-updown-5m-1800000000',
+  ])('rejects noncanonical or alternative metadata recipe %s', (metadataUrl) => {
+    expect(() => harness({ metadataUrl })).toThrow('invalid_policy_or_clock');
+  });
+
+  it.each([EPOCH + 1, EPOCH + 1000, Number.NaN, Number.MAX_SAFE_INTEGER, 0])
+  ('pure slot URL helper rejects noncanonical starts (%s)', (start) => {
+    expect(() => currentSlotMetadataUrl(start)).toThrow('invalid_slot_start');
+  });
+
   it.each(['v1', 'v2'] as const)('pins the four requests, %s route, body hashes and immutable market', async (protocolVersion) => {
     const h = harness({}, [{ body: '{"source":"metadata"}' }]);
     const metadata = await h.capture.readMetadata();

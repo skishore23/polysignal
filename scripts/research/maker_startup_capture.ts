@@ -30,6 +30,22 @@ export type CaptureTransports = {
 };
 export type CaptureMarket = { condition: string; token: string; protocolVersion: 'v1' | 'v2' };
 export const STARTUP_METADATA_URL = 'https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=100&order=endDate&ascending=true';
+const SLOT_METADATA_PREFIX = 'https://gamma-api.polymarket.com/markets/slug/btc-updown-5m-';
+const SLOT_METADATA_PATTERN = /^https:\/\/gamma-api\.polymarket\.com\/markets\/slug\/btc-updown-5m-([0-9]{10})$/;
+const SLOT_MS = 300_000;
+/** Constructs one literal current-slot recipe; it performs no discovery or I/O. */
+export function currentSlotMetadataUrl(slotStartUtcMs: number): string {
+  if (!Number.isSafeInteger(slotStartUtcMs) || slotStartUtcMs % SLOT_MS !== 0 ||
+    !/^[0-9]{10}$/.test(String(slotStartUtcMs / 1000))) throw Error('capture:invalid_slot_start');
+  return `${SLOT_METADATA_PREFIX}${slotStartUtcMs / 1000}`;
+}
+function metadataSlotStart(url: string): number | null {
+  if (typeof url !== 'string') return null;
+  const match = SLOT_METADATA_PATTERN.exec(url);
+  if (!match) return null;
+  const seconds = Number(match[1]);
+  return seconds % 300 === 0 && `${SLOT_METADATA_PREFIX}${seconds}` === url ? seconds * 1000 : null;
+}
 const SOCKET_URL = 'wss://ws-subscriptions-clob.polymarket.com/ws/market';
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const sha = (raw: Buffer) => createHash('sha256').update(raw).digest('hex');
@@ -42,6 +58,7 @@ export class StartupSourceCapture {
   private readonly transports: CaptureTransports;
   private readonly outputDir: string;
   private readonly origin: CaptureClock;
+  private readonly metadataSlotStartUtcMs: number | null;
   private last: CaptureClock;
   private market: Readonly<CaptureMarket> | null = null;
   private activeRead = false;
@@ -60,13 +77,15 @@ export class StartupSourceCapture {
     this.clock = clock;
     this.origin = copy(clock());
     this.last = copy(this.origin);
+    this.metadataSlotStartUtcMs = metadataSlotStart(policy.metadataUrl);
     if (!Number.isSafeInteger(this.origin.utc) || this.origin.utc < 0 || !Number.isFinite(this.origin.mono) || this.origin.mono < 0 ||
-      policy.metadataUrl !== STARTUP_METADATA_URL || policy.maxReads !== 4 ||
+      (policy.metadataUrl !== STARTUP_METADATA_URL && this.metadataSlotStartUtcMs === null) || policy.maxReads !== 4 ||
       policy.perReadBodyBytes !== 2_097_152 || policy.maxBodyBytes !== 8_388_608 ||
       !Number.isSafeInteger(policy.maxMessages) || policy.maxMessages < 1 || policy.maxMessages > 1000 ||
       !Number.isSafeInteger(policy.maxWallMs) || policy.maxWallMs < 1 || policy.maxWallMs > 300_000 ||
       !Number.isSafeInteger(policy.expiresUtcMs) || policy.expiresUtcMs <= this.origin.utc ||
-      policy.expiresUtcMs - this.origin.utc > policy.maxWallMs) throw Error('capture:invalid_policy_or_clock');
+      policy.expiresUtcMs - this.origin.utc > policy.maxWallMs ||
+      (this.metadataSlotStartUtcMs !== null && policy.expiresUtcMs > this.metadataSlotStartUtcMs + SLOT_MS)) throw Error('capture:invalid_policy_or_clock');
     this.policy = Object.freeze({ ...policy });
     this.transports = {
       request: (url, options, callback) => https.request(url, options, callback),
@@ -140,7 +159,7 @@ export class StartupSourceCapture {
     this.market = Object.freeze({ condition: value.condition, token: value.token, protocolVersion: value.protocolVersion });
     this.state.market = this.market; this.persist();
   }
-  readMetadata() { return this.read('metadata', STARTUP_METADATA_URL); }
+  readMetadata() { return this.read('metadata', this.policy.metadataUrl); }
   readMarket() { return this.boundRead('market', (m) => `https://clob.polymarket.com/${m.protocolVersion === 'v2' ? 'clob-markets' : 'markets'}/${m.condition}`); }
   readBook() { return this.boundRead('book', (m) => `https://clob.polymarket.com/book?token_id=${m.token}`); }
   readFee() { return this.boundRead('fee', (m) => `https://clob.polymarket.com/fee-rate?token_id=${m.token}`); }
@@ -151,6 +170,7 @@ export class StartupSourceCapture {
 
   private async read(name: string, url: string): Promise<RawCapture> {
     this.available(); const startedAt = this.at();
+    if (name === 'metadata') this.assertMetadataSlot(startedAt);
     if (this.activeRead || this.attempted.has(name) || this.state.readsClaimed >= this.policy.maxReads) throw this.fail('read_duplicate_or_concurrent');
     this.attempted.add(name); this.activeRead = true;
     const entry: Record<string, any> = { name, url, startedAt, status: 'CLAIMED', bodyBytes: 0 };
@@ -188,7 +208,8 @@ export class StartupSourceCapture {
         this.activeAbort = () => finish('capture_terminal_failure');
         const timer = setTimeout(() => finish('https_absolute_deadline'), remainingMs);
         try {
-          this.at();
+          const attemptAt = this.at();
+          if (name === 'metadata') this.assertMetadataSlot(attemptAt);
           request = this.transports.request(url, {
             method: 'GET', agent: false, maxHeaderSize: 16_384,
             headers: { Accept: 'application/json', 'Accept-Encoding': 'identity', Connection: 'close' },
@@ -234,6 +255,11 @@ export class StartupSourceCapture {
       entry.sha256 = sha(Buffer.concat(chunks));
       this.persist();
     }
+  }
+
+  private assertMetadataSlot(at: CaptureClock) {
+    if (this.metadataSlotStartUtcMs !== null && (at.utc < this.metadataSlotStartUtcMs ||
+      at.utc > this.metadataSlotStartUtcMs + SLOT_MS - 60_000)) throw this.fail('metadata_slot_not_current_or_less_than_60s');
   }
 
   async stream(callbacks: {
