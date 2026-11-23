@@ -17,12 +17,13 @@ export const sha = (x: string | Buffer) => createHash("sha256").update(x).digest
 const json = (x: unknown) => JSON.stringify(x, null, 2) + "\n";
 function check(x: unknown, why: string): asserts x { if (!x) throw Error("maker_operating:" + why); }
 export const OPERATING_PROTOCOL = {
-  schema: "ORDINARY_PAPER_MAKER_OPERATING_V1", venue: "POLYMARKET_ONLY", profile: "OPERATING_BURST_V1",
+  schema: "ORDINARY_PAPER_MAKER_OPERATING_V2", venue: "POLYMARKET_ONLY", profile: "OPERATING_BURST_V1",
   account: PAPER_PROFILES.OPERATING_BURST_V1, sizing: "soft20USDC*positive_regime; exact legal venue floor within hard limits",
   inventoryPreference: "configured K50bps at full200share capacity; changed prospective convention",
   noFills: true, noLiveOrders: true, noPi: true, rewards: false, stopAtFirstQuote: false,
   source: { slotMs: 300000, startBeforeCloseMs: 60000, readsPerAttempt: 4, socketsPerAttempt: 1,
-    maxAttemptsPerSlot: 3, retryBackoffMs: [2000,10000], rawFrameMaxBytes: 2097152,
+    maxAttemptsPerSlot: 3, retryBackoffMs: [2000,10000],
+    emptyBook: "cancel and fresh resync within existing attempts; malformed side schema remains correctness fault", rawFrameMaxBytes: 2097152,
     segmentBodyBytes: 8388608, segmentMessages: 20000, maxQueuedBytes: 8388608, maxQueuedMessages: 4000,
     maxTradesPerSlot: 20000, reconnect: "fresh explicit attempt; cancel and reset history; no continuous-gap claim" },
   tickMs: 1000, ttlMs: 5000, watchdogMs: 250, sourceMaxAgeMs: 1000,
@@ -38,6 +39,7 @@ export const OPERATING_INPUTS = [...new Set([...REQUIRED_INPUTS,
 export function operatingInputHashes() { return Object.fromEntries(OPERATING_INPUTS.map(p => [p, sha(readFileSync(path.join(ROOT,p)))])); }
 export type OperatingAdmission = { schema: "STANDING_PAPER_MAKER_ADMISSION_V1"; runName: string;
   inputMode: "CURRENT_PUBLIC_CAPTURE" | "OFFLINE_FIXTURE"; notBeforeUtcMs: number; protocolSha256: string;
+  carryFrom?: { runName:string; stateSha256:string };
   inputSha256: Record<string,string>; owner28Sha256: string; reviewFile: string; reviewSha256: string };
 export function validateOperatingAdmission(a: OperatingAdmission, now: StartupClock, offline = false) {
   check(a.schema === "STANDING_PAPER_MAKER_ADMISSION_V1" && /^maker-operating-[a-zA-Z0-9_-]{1,80}$/.test(a.runName), "admission");
@@ -49,7 +51,14 @@ export function validateOperatingAdmission(a: OperatingAdmission, now: StartupCl
   const raw = readFileSync(a.reviewFile); check(sha(raw) === a.reviewSha256, "review_hash"); const r = JSON.parse(raw.toString());
   check(r.decision === "APPROVE_STANDING_PAPER_OPERATION" && r.runName === a.runName && r.inputMode === a.inputMode
     && r.protocolSha256 === a.protocolSha256 && r.owner28Sha256 === a.owner28Sha256
+    && ((!r.carryFrom && !a.carryFrom) || (r.carryFrom && a.carryFrom
+      && r.carryFrom.runName===a.carryFrom.runName && r.carryFrom.stateSha256===a.carryFrom.stateSha256))
     && OPERATING_INPUTS.every(p => r.inputSha256[p] === hashes[p]), "independent_operating_admission");
+}
+export function isUnavailableEmptyBook(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.message === "maker_source:empty_book_side"
+    || error.message === "operating:Error: maker_source:empty_book_side:";
 }
 function atomic(file: string, value: unknown) { const tmp = file + "." + randomUUID() + ".tmp"; writeFileSync(tmp,json(value),{flag:"wx",mode:0o600}); renameSync(tmp,file); }
 export function reconcileOperatingDatabase(file: string, utc: number, allowedRunDirectory: string) {
@@ -112,11 +121,23 @@ export async function runOperatingMaker(admissionFile: string, test?: { clock:()
     && modelCopies.every(p=>sha(readFileSync(p.file))===admission.inputSha256[p.source])
     && sha(readFileSync(OWNER))===admission.owner28Sha256,"runtime_source_drift");
   const stateFile=path.join(runDir,"state.json"), events=path.join(runDir,"events.ndjson"), stopFile=path.join(runDir,"STOP");
-  const state:any=existsSync(stateFile)?JSON.parse(readFileSync(stateFile,"utf8")):{schema:"OPERATING_PAPER_STATE_V1",virtualCashUSDC:"100",epoch:0,totalQuotes:0,totalTicks:0,totalSamples:0,totalCancellations:0};
+  let carry:any=null;
+  if(!existsSync(stateFile) && admission.carryFrom){
+    check(/^maker-operating-[a-zA-Z0-9_-]{1,80}$/.test(admission.carryFrom.runName)
+      && admission.carryFrom.runName!==admission.runName,"carry_scope");
+    const priorDir=path.join(ROOT,"reports/evidence",admission.carryFrom.runName);check(realpathSync(priorDir)===priorDir,"carry_identity");
+    const priorRaw=readFileSync(path.join(priorDir,"state.json"));check(sha(priorRaw)===admission.carryFrom.stateSha256,"carry_state_hash");
+    carry=JSON.parse(priorRaw.toString());
+    check(carry.schema==="OPERATING_PAPER_STATE_V1" && carry.virtualCashUSDC==="100" && carry.activeDatabase===null
+      && carry.activeOrders===0 && carry.pendingLiabilityNumerator==="0" && carry.fills===0
+      && ["STOPPED","OFFLINE_FINISHED"].includes(carry.status),"carry_unreconciled");
+    carry={...carry,carriedFrom:admission.carryFrom,sourceAdmissionChanged:true};
+  }
+  const state:any=existsSync(stateFile)?JSON.parse(readFileSync(stateFile,"utf8")):carry??{schema:"OPERATING_PAPER_STATE_V1",virtualCashUSDC:"100",epoch:0,totalQuotes:0,totalTicks:0,totalSamples:0,totalCancellations:0};
   check(state.virtualCashUSDC==="100" && state.schema==="OPERATING_PAPER_STATE_V1","account_state");
   const emit=(kind:string,data:any={})=>appendFileSync(events,JSON.stringify({kind,at:now(),...data})+"\n",{mode:0o600});
   if (state.activeDatabase) { const recovered=reconcileOperatingDatabase(state.activeDatabase,now().utc,runDir);emit("RESTART_RECONCILED",recovered);state.totalCancellations=(state.totalCancellations??0)+recovered.cancelled;state.unverifiedCrashTailOrders=(state.unverifiedCrashTailOrders??0)+recovered.unverifiedCrashTailOrders;state.activeDatabase=null; }
-  state.pid=process.pid;state.startedAt=now();state.status="RUNNING";state.profitUSDC=null;state.fills=0;state.inputMode=admission.inputMode;
+  state.pid=process.pid;state.startedAt=now();state.status="RUNNING";state.stopReason=null;state.fault=null;state.profitUSDC=null;state.fills=0;state.inputMode=admission.inputMode;
   let stopping=false, stopReason="operator_stop", capture:Capture|null=null, sink:Sink|null=null, currentBook:any=null, appliedFrames=0;
   const stop=(why:string)=>{stopping=true;stopReason=why;capture?.stop(why);};
   const signal=()=>stop("signal_stop"); if (!test) {process.on("SIGTERM",signal);process.on("SIGINT",signal);}
@@ -209,6 +230,7 @@ export async function runOperatingMaker(admissionFile: string, test?: { clock:()
           emit("SOURCE_ATTEMPT_END",{epoch,termination:term});
         } catch(e){state.lastSourceFault=String(e);emit("SOURCE_ATTEMPT_FAULT",{epoch,error:String(e)});
           if(now().utc>=slot+300000)normalEnd=true;
+          else if(isUnavailableEmptyBook(e))emit("EMPTY_BOOK_RESYNC",{epoch,slot,attempt});
           else if(String(e).includes("maker_source:") || String(e).includes("maker_operating_source:") || String(e).includes("source_metadata:") || String(e).includes("maker_operating:"))stop("source_correctness_fault");
         } finally {
           const finalCapture=capture as Capture;

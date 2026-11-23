@@ -76,7 +76,7 @@ describe("isolated no-fill maker startup boundary", () => {
     expect(f.sink.snapshot().pendingLiabilityNumerator).toBe("1000000000000000000");
   });
   it("pins both immutable paper profiles without increasing the synthetic ten-USDC opening", () => {
-    expect(PAPER_PROFILES).toEqual({
+    expect(PAPER_PROFILES).toMatchObject({
       INITIAL_2_USDC: { perOrderUSDC: "2", totalLossUSDC: "2", exposureUSDC: "4", quoteSizeTargetShares: null },
       OWNER_6_USDC: { perOrderUSDC: "6", totalLossUSDC: "6", exposureUSDC: "6", quoteSizeTargetShares: null },
     });

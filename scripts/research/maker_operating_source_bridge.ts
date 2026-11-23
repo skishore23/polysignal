@@ -54,6 +54,8 @@ export function createOperatingSourceState(
   if (maxTradesPerSlot !== undefined) {
     check(Number.isSafeInteger(maxTradesPerSlot) && maxTradesPerSlot > 0, "invalid_trade_capacity");
   }
+  const initialRestShape = object(JSON.parse(input.clobBook.raw));
+  check(Array.isArray(initialRestShape.bids) && Array.isArray(initialRestShape.asks), "book_side_schema");
   const base = deriveMakerStartupInputs({ ...input, stream: [] });
   const { identity } = base;
   const { token, market, condition } = identity;
@@ -92,7 +94,8 @@ export function createOperatingSourceState(
     if (row.tick_size !== undefined) check(decimal(row.tick_size, true).units === tick.units, "snapshot_tick_context");
     const venueUtc = venueTime(row.timestamp, at.utc);
     const levels = (values: unknown) => {
-      check(Array.isArray(values) && values.length > 0, "empty_book_side");
+      check(Array.isArray(values), "book_side_schema");
+      check(values.length > 0, "empty_book_side");
       const seen = new Set<bigint>();
       return values.map(v => {
         const level = object(v), p = price(level.price), size = decimal(level.size, true);

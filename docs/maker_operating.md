@@ -56,3 +56,10 @@ and replay interfaces are used here. A future RL experiment must define and
 independently verify original actions, transitions and rewards, then satisfy the
 scientific contract/headroom/freeze/strong-control gates. No learning or net
 value claim follows from these engineering checks.
+
+V2 retains V1’s29 actual shadow quotes and safe stopped outcome. A valid but
+empty book now cancels/restarts the source within the same3attempt policy; an
+invalid non-array side remains a correctness fault. Controlled new-admission
+carry must bind the prior stopped/reconciled state hash; it copies the same
+virtual cash, counters and per-slot attempt debt, never adds funding or clears
+an outstanding reservation. All originals remain retained.
