@@ -1,4 +1,4 @@
-/** ADR-POLY-003 offline preparation only. No CLI, source collector, fill model or live gateway. */
+/** ADR-POLY-003 isolated no-fill paper boundary. No source collector or live gateway. */
 import Database from "better-sqlite3";
 import { openSync, closeSync, realpathSync } from "node:fs";
 import path from "node:path";
@@ -7,15 +7,25 @@ import { BeliefEngine } from "../../apps/worker/src/belief/BeliefEngine";
 import { MicrostructureBeliefProvider } from "../../apps/worker/src/belief/MicrostructureBeliefProvider";
 import { RegimeGate } from "../../apps/worker/src/regime/RegimeGate";
 
-type Clock = { utc: number; mono: number };
-export type StartupContract = {
-  purpose: "SYNTHETIC_OFFLINE_ENGINEERING";
+export type StartupClock = { utc: number; mono: number; sourceSequence?: number; sourceAvailable?: boolean };
+type Clock = StartupClock;
+type ContractFields = {
+  executionDeadlineUtc?: number;
+  sourceFrontier?: number;
   market: string; condition: string; wallet: number;
   tokens: readonly [string, string];
   book: { token: string; bid: string; ask: string; tick: string; lot: string; minimum: string;
+    minimumUnit?: "SHARES" | "USDC_NOTIONAL";
+    minimumShares?: string;
     receipt: Clock; venueUtc: number; valid: boolean; sourceHash: string };
   fee: { perShareUSDC: string; provenance: string } | null;
 };
+export type StartupContract = ContractFields & (
+  | { purpose: "SYNTHETIC_OFFLINE_ENGINEERING" }
+  | { purpose: "PROSPECTIVE_PAPER_ENGINEERING";
+      evidence: { admissionSha256: string; captureSha256: string;
+        mode: "PUBLIC_POLYMARKET_READ_ONLY"; protocolVersion: "v1" | "v2" } }
+);
 const SCALE = 1_000_000_000n;
 const USD = SCALE * SCALE;
 const isolatedDatabases = new WeakSet<Database.Database>();
@@ -34,7 +44,7 @@ const integerTime = (n: number): boolean => Number.isSafeInteger(n) && n >= 0;
 type Order = Record<string, any>;
 
 /** Exclusive new local file only; caller owns schema/fixture loading, never a production connection. */
-export function newOfflineDatabase(file: string, canonicalSchema: string): Database.Database {
+export function newIsolatedStartupDatabase(file: string, canonicalSchema: string): Database.Database {
   const dir = realpathSync(path.dirname(file));
   const allowed = realpathSync(path.resolve("reports/evidence"));
   requireThat(dir.startsWith(allowed + path.sep), "isolated_report_directory_required");
@@ -45,11 +55,33 @@ export function newOfflineDatabase(file: string, canonicalSchema: string): Datab
   catch (err) { db.close(); throw err; } // Keep failed file as evidence, never overwrite/retry it.
 }
 
+/** Kept for existing offline fixtures; the input contract still declares its evidence mode. */
+export const newOfflineDatabase = newIsolatedStartupDatabase;
+
 /** A DB precommit boundary. This is conservative paper liability, never paid cash or profit. */
 export function installStartupSink(db: Database.Database, input: StartupContract, now: () => Clock) {
   requireThat(isolatedDatabases.has(db), "exclusive_offline_database_required");
-  const contract: StartupContract = JSON.parse(JSON.stringify(input));
-  requireThat(contract.purpose === "SYNTHETIC_OFFLINE_ENGINEERING", "offline_only");
+  let contract: StartupContract = JSON.parse(JSON.stringify(input));
+  requireThat(contract.purpose === "SYNTHETIC_OFFLINE_ENGINEERING"
+    || contract.purpose === "PROSPECTIVE_PAPER_ENGINEERING", "unsupported_purpose");
+  if (contract.purpose === "PROSPECTIVE_PAPER_ENGINEERING") {
+    requireThat(contract.evidence?.mode === "PUBLIC_POLYMARKET_READ_ONLY"
+      && /^[a-f0-9]{64}$/.test(contract.evidence.admissionSha256)
+      && /^[a-f0-9]{64}$/.test(contract.evidence.captureSha256)
+      && contract.evidence.captureSha256 === contract.book.sourceHash, "source_evidence_binding");
+    requireThat((contract.evidence.protocolVersion === "v1" || contract.evidence.protocolVersion === "v2")
+      && (contract.book.minimumUnit === "SHARES" || contract.book.minimumUnit === "USDC_NOTIONAL")
+      && (contract.evidence.protocolVersion !== "v2" || contract.book.minimumUnit === "USDC_NOTIONAL"),
+      "protocol_or_minimum_units");
+    requireThat(typeof contract.book.minimumShares === "string" && decimal(contract.book.minimumShares) > 0n,
+      "original_minimum_shares_required");
+    requireThat(integerTime(contract.executionDeadlineUtc!) && contract.executionDeadlineUtc! > contract.book.receipt.utc,
+      "absolute_execution_deadline_required");
+    requireThat(Number.isSafeInteger(contract.sourceFrontier) && contract.sourceFrontier! >= 0,
+      "source_frontier_required");
+    requireThat(/^\d+$/.test(contract.market) && /^0x[a-fA-F0-9]{64}$/.test(contract.condition)
+      && contract.tokens.every(t => /^\d+$/.test(t)), "prospective_original_identity");
+  }
   requireThat(contract.market && contract.condition && Number.isSafeInteger(contract.wallet), "identity");
   requireThat(contract.tokens.length === 2 && contract.tokens.every(t => typeof t === "string" && t.length > 0)
     && contract.tokens[0] !== contract.tokens[1] && contract.tokens.includes(contract.book.token), "tokens");
@@ -57,9 +89,13 @@ export function installStartupSink(db: Database.Database, input: StartupContract
   for (const table of ["shadow_orders", "shadow_fills", "decision_log"])
     requireThat((db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as any).n === 0, "nonempty_sink");
   const rejections: { reason: string; proposed: Order; clock: Clock }[] = [];
+  const precommitChecks: { clientOrderId: string; clock: Clock; sourceHash: string; sourceFrontier: number | null }[] = [];
+  const observations: StartupContract[] = [JSON.parse(JSON.stringify(contract))];
   let last = now();
   const opening = JSON.stringify({ cashUSDC: "10", shares: Object.fromEntries(contract.tokens.map(t => [t, "0"])),
-    funding: "synthetic_offline_only", paidFees: null, creditedRewards: null, settlement: null, profit: null });
+    funding: contract.purpose === "SYNTHETIC_OFFLINE_ENGINEERING" ? "synthetic_offline_only" : "explicit_synthetic_paper_opening",
+    inputEvidence: contract.purpose === "SYNTHETIC_OFFLINE_ENGINEERING" ? "OFFLINE_FIXTURE" : "CURRENT_PUBLIC_CAPTURE",
+    purpose: contract.purpose, paidFees: null, creditedRewards: null, settlement: null, profit: null });
   db.exec("CREATE TABLE startup_opening (record TEXT NOT NULL)");
   db.prepare("INSERT INTO startup_opening VALUES (?)").run(opening);
   db.exec(`CREATE TRIGGER startup_opening_update BEFORE UPDATE ON startup_opening BEGIN SELECT RAISE(ABORT,'immutable_opening'); END;
@@ -71,11 +107,15 @@ export function installStartupSink(db: Database.Database, input: StartupContract
     return (db.prepare("SELECT * FROM shadow_orders WHERE status IN ('PENDING','OPEN','PARTIAL')").all() as Order[])
       .reduce((sum, o) => sum + liability(o), 0n);
   }
-  function validate(o: Order, existing: Order[]): void {
+  function validate(o: Order, existing: Order[]): Clock {
     const clock = now();
     requireThat(integerTime(clock.utc) && Number.isFinite(clock.mono) && clock.mono >= 0
       && integerTime(last.utc) && Number.isFinite(last.mono), "clock");
     requireThat(clock.utc >= last.utc && clock.mono >= last.mono, "backward_clock");
+    requireThat(contract.executionDeadlineUtc === undefined || clock.utc < contract.executionDeadlineUtc,
+      "execution_deadline");
+    requireThat(contract.sourceFrontier === undefined || (clock.sourceAvailable === true
+      && clock.sourceSequence === contract.sourceFrontier), "unprocessed_or_closed_source_frontier");
     last = clock;
     const b = contract.book;
     requireThat(b.valid === true && integerTime(b.receipt.utc) && Number.isFinite(b.receipt.mono)
@@ -89,7 +129,9 @@ export function installStartupSink(db: Database.Database, input: StartupContract
     const p = decimal(o.price), q = decimal(o.size), tick = decimal(b.tick), lot = decimal(b.lot), minimum = decimal(b.minimum);
     const bid = decimal(b.bid), ask = decimal(b.ask);
     requireThat(tick > 0n && lot > 0n && minimum > 0n && bid > 0n && ask < SCALE && bid < ask, "metadata_or_book");
-    requireThat(p > 0n && p < SCALE && q > 0n && p % tick === 0n && q % lot === 0n && q >= minimum, "tick_lot_minimum");
+    const meetsMinimum = b.minimumUnit === "USDC_NOTIONAL" ? q * p >= minimum * SCALE : q >= minimum;
+    requireThat(p > 0n && p < SCALE && q > 0n && p % tick === 0n && q % lot === 0n && meetsMinimum
+      && (b.minimumShares === undefined || q >= decimal(b.minimumShares)), "tick_lot_minimum");
     requireThat(o.wallet_id === contract.wallet && o.market_id === contract.market && o.token_id === b.token, "original_identity");
     requireThat(o.side === "BUY" && o.kind === "MAKER_BID" && o.strategy_lane === "MAKER" && p < ask, "unowned_sell_or_crossing");
     requireThat(o.execution_mode === "SHADOW" && o.external_order_id === null && o.status === "OPEN"
@@ -101,11 +143,14 @@ export function installStartupSink(db: Database.Database, input: StartupContract
     const own = liability(o), total = own + existing.reduce((sum, row) => sum + liability(row), 0n);
     requireThat(own <= 2n * USD, "order_cap");
     requireThat(total <= 2n * USD && total <= 4n * USD && total <= 10n * USD, "aggregate_pending_loss");
+    return { ...clock };
   }
   // JSON binds actual persisted row fields; rejection receipts survive engine transaction rollback.
   db.function("startup_check", (raw: string, existing: string) => {
     const proposed = JSON.parse(raw);
-    try { validate(proposed, JSON.parse(existing)); return 1; }
+    try { const clock = validate(proposed, JSON.parse(existing));
+      precommitChecks.push({ clientOrderId: proposed.client_order_id, clock,
+        sourceHash: contract.book.sourceHash, sourceFrontier: contract.sourceFrontier ?? null }); return 1; }
     catch (error) { rejections.push({ reason: String(error), proposed, clock: now() }); throw error; }
   });
   const columns = (db.prepare("PRAGMA table_info(shadow_orders)").all() as any[]).map(c => c.name as string);
@@ -137,9 +182,33 @@ export function installStartupSink(db: Database.Database, input: StartupContract
   guardedDatabases.add(db);
   return {
     rejections,
+    /** Refresh causal book evidence only while no accepted quote can carry a liability. */
+    updateObservation(nextInput: StartupContract) {
+      requireThat(pending() === 0n && (db.prepare("SELECT COUNT(*) AS n FROM shadow_fills").get() as any).n === 0,
+        "observation_with_pending_liability");
+      const next: StartupContract = JSON.parse(JSON.stringify(nextInput));
+      const immutable = (c: StartupContract) => JSON.stringify({ ...c, sourceFrontier: null,
+        book: { token: c.book.token, tick: c.book.tick, lot: c.book.lot, minimum: c.book.minimum,
+          minimumUnit: c.book.minimumUnit, minimumShares: c.book.minimumShares },
+        ...(c.purpose === "PROSPECTIVE_PAPER_ENGINEERING" ? { evidence: { ...c.evidence, captureSha256: null } } : {}) });
+      requireThat(immutable(next) === immutable(contract), "observation_identity_or_terms_change");
+      requireThat(next.book.valid === true && /^[a-f0-9]{64}$/.test(next.book.sourceHash)
+        && integerTime(next.book.receipt.utc) && Number.isFinite(next.book.receipt.mono)
+        && next.book.receipt.utc >= contract.book.receipt.utc
+        && next.book.receipt.mono >= contract.book.receipt.mono, "observation_clock_or_source");
+      if (contract.sourceFrontier !== undefined)
+        requireThat(Number.isSafeInteger(next.sourceFrontier) && next.sourceFrontier! >= contract.sourceFrontier,
+          "observation_frontier_regression");
+      if (next.purpose === "PROSPECTIVE_PAPER_ENGINEERING")
+        requireThat(next.evidence.captureSha256 === next.book.sourceHash, "source_evidence_binding");
+      contract = next;
+      observations.push(JSON.parse(JSON.stringify(contract)));
+    },
     snapshot() {
       return { contract: JSON.parse(JSON.stringify(contract)) as StartupContract, opening: JSON.parse(opening), orders: db.prepare("SELECT * FROM shadow_orders ORDER BY id").all(),
         decisions: db.prepare("SELECT * FROM decision_log ORDER BY id").all(),
+        observations: JSON.parse(JSON.stringify(observations)) as StartupContract[],
+        precommitChecks: JSON.parse(JSON.stringify(precommitChecks)),
         fills: db.prepare("SELECT * FROM shadow_fills").all(), pendingLiabilityNumerator: pending().toString(), denominator: USD.toString() };
     },
     cancelAll() {
@@ -153,7 +222,7 @@ export function installStartupSink(db: Database.Database, input: StartupContract
 }
 
 /** One existing private tick through its established test seam. Never start the recurring scheduler. */
-export async function oneOfflineMakerTick(db: Database.Database, config: any, logger: any) {
+export function createIsolatedMaker(db: Database.Database, config: any, logger: any) {
   requireThat(guardedDatabases.has(db), "installed_sink_required");
   requireThat(config.executionMode === "PAPER" && config.regimeGating.enabled, "ordinary_paper_config");
   const gate = new RegimeGate(config.regimeGating, logger);
@@ -165,6 +234,14 @@ export async function oneOfflineMakerTick(db: Database.Database, config: any, lo
     // Registered scope overrides only; no change to ordinary EV/flow/belief/regime policy.
     maxNotionalPerOrderUsd: 2, enableBidQuotes: true, enableAskQuotes: false,
     rebateShareAssumption: 0, liquidityRewardBpsWhenScoring: 0 }, { sqlite: db, logger, belief, regimeGate: gate });
-  await (engine as any).tick();
-  return gate.getLoadDiagnostics();
+  return { tick: () => (engine as any).tick() as Promise<void>, getGateDiagnostics: () => gate.getLoadDiagnostics() };
 }
+
+export async function oneIsolatedMakerTick(db: Database.Database, config: any, logger: any) {
+  const engine = createIsolatedMaker(db, config, logger);
+  await engine.tick();
+  return engine.getGateDiagnostics();
+}
+
+/** Compatibility entry point for offline regressions; never a prospective-start receipt. */
+export const oneOfflineMakerTick = oneIsolatedMakerTick;

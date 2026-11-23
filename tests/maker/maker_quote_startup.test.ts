@@ -3,7 +3,7 @@ import { readFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { newOfflineDatabase, installStartupSink, oneOfflineMakerTick, type StartupContract } from "../../scripts/research/maker_quote_startup";
+import { newOfflineDatabase, installStartupSink, oneOfflineMakerTick, type StartupContract, type StartupClock } from "../../scripts/research/maker_quote_startup";
 
 const schema = readFileSync("tests/maker/fixtures/startup-canonical-schema.sql", "utf8");
 const bindings: Record<string, string> = {
@@ -25,9 +25,9 @@ function fixture(change: (c: StartupContract) => void = () => {}) {
       tick: "0.01", lot: "0.01", minimum: "1", receipt: { ...clock }, venueUtc: clock.utc,
       valid: true, sourceHash: "a".repeat(64) }, fee: { perShareUSDC: "0", provenance: "explicit synthetic zero fee bound, not observed" } };
   change(c);
-  let current = { ...clock };
+  let current: StartupClock = { ...clock };
   const sink = installStartupSink(db, c, () => ({ ...current }));
-  return { db, sink, dir, file, c, setClock: (x: typeof clock) => { current = x; } };
+  return { db, sink, dir, file, c, setClock: (x: StartupClock) => { current = x; } };
 }
 const order = (id = "q1", change: Record<string, unknown> = {}) => ({
   ts: clock.utc, wallet_id: 1, token_id: "fixture-yes", market_id: "fixture-market", side: "BUY", kind: "MAKER_BID",
@@ -128,6 +128,91 @@ describe("isolated no-fill maker startup boundary", () => {
     expect(() => submit(f.db, order("bad-lot", { size: 1.001 }))).toThrow();
     submit(f.db);
     expect(f.sink.snapshot().pendingLiabilityNumerator).toBe("1000000000000000000");
+  });
+  // These are declaration/guard tests using fabricated evidence, never source observations.
+  it("keeps prospective paper inputs distinct from synthetic capital and offline fixtures", () => {
+    const f = fixture(c => {
+      Object.assign(c, { purpose: "PROSPECTIVE_PAPER_ENGINEERING", market: "123", condition: "0x" + "1".repeat(64),
+        tokens: ["111", "222"], evidence: { admissionSha256: "b".repeat(64), captureSha256: "a".repeat(64),
+          mode: "PUBLIC_POLYMARKET_READ_ONLY", protocolVersion: "v1" } });
+      c.book.token = "111";
+      c.book.minimumUnit = "SHARES";
+      c.book.minimumShares = "1";
+      c.executionDeadlineUtc = clock.utc + 300000;
+      c.sourceFrontier = 0;
+    });
+    f.setClock({ ...clock, sourceSequence: 0, sourceAvailable: true });
+    submit(f.db, order("p", { market_id: "123", token_id: "111" }));
+    expect(f.sink.snapshot().opening).toMatchObject({ cashUSDC: "10", inputEvidence: "CURRENT_PUBLIC_CAPTURE",
+      funding: "explicit_synthetic_paper_opening", purpose: "PROSPECTIVE_PAPER_ENGINEERING", profit: null });
+    expect(f.sink.cancelAll()).toMatchObject({ syntheticCashUSDC: "10", fills: 0, profitUSDC: null });
+  });
+  it("refreshes observed books without changing frozen terms or hiding pending liabilities", () => {
+    const f = fixture();
+    const next = structuredClone(f.c);
+    next.book.bid = "0.48"; next.book.ask = "0.52";
+    next.book.receipt = { utc: clock.utc + 100, mono: clock.mono + 100 };
+    next.book.venueUtc = clock.utc + 100; next.book.sourceHash = "c".repeat(64);
+    f.setClock({ ...next.book.receipt });
+    f.sink.updateObservation(next);
+    const badTerms = structuredClone(next); badTerms.book.minimum = "0.1";
+    expect(() => f.sink.updateObservation(badTerms)).toThrow("observation_identity_or_terms_change");
+    expect(() => f.sink.updateObservation(f.c)).toThrow("observation_clock_or_source");
+    submit(f.db, order("new", { ts: clock.utc + 100, expected_cancel_ts: clock.utc + 5100 }));
+    expect(() => f.sink.updateObservation(next)).toThrow("observation_with_pending_liability");
+    expect(f.sink.snapshot().observations).toHaveLength(2);
+    f.sink.cancelAll();
+  });
+  it.each(["capture", "admission", "mode", "market", "condition", "token"])(
+    "rejects an unbound prospective %s before writing opening accounting", kind => {
+      expect(() => fixture(c => {
+        const evidence = { admissionSha256: "b".repeat(64), captureSha256: "a".repeat(64), mode: "PUBLIC_POLYMARKET_READ_ONLY", protocolVersion: "v1" };
+        Object.assign(c, { purpose: "PROSPECTIVE_PAPER_ENGINEERING", market: "123", condition: "0x" + "1".repeat(64),
+          tokens: ["111", "222"], evidence });
+        c.book.token = "111";
+        c.book.minimumUnit = "SHARES";
+        c.book.minimumShares = "1";
+        c.executionDeadlineUtc = clock.utc + 300000;
+        c.sourceFrontier = 0;
+        if (kind === "capture") evidence.captureSha256 = "c".repeat(64);
+        if (kind === "admission") evidence.admissionSha256 = "missing";
+        if (kind === "mode") evidence.mode = "PRIVATE_OR_LIVE";
+        if (kind === "market") c.market = "fixture";
+        if (kind === "condition") c.condition = "unknown";
+        if (kind === "token") c.tokens = ["fixture", "222"];
+      })).toThrow();
+    });
+  it("enforces a USDC minimum on principal rather than mistaking it for share quantity", () => {
+    const f = fixture(c => { c.book.minimumUnit = "USDC_NOTIONAL"; c.book.minimum = "1"; });
+    expect(() => submit(f.db, order("quantity-only", { price: .1, size: 2 }))).toThrow("tick_lot_minimum");
+    submit(f.db, order("enough-notional", { price: .5, size: 2 }));
+    expect(f.sink.snapshot().orders).toHaveLength(1);
+    f.sink.cancelAll();
+    const g = fixture(c => { c.book.minimumUnit = "USDC_NOTIONAL"; c.book.minimum = "5"; });
+    expect(() => submit(g.db, order("min-but-over-cap", { price: .5, size: 10 }))).toThrow("order_cap");
+    expect(g.sink.snapshot().orders).toHaveLength(0);
+    const h = fixture(c => { c.book.minimumUnit = "USDC_NOTIONAL"; c.book.minimum = "1"; c.book.minimumShares = "5"; });
+    expect(() => submit(h.db, order("enough-usd-too-few-shares", { price: .5, size: 4 }))).toThrow("tick_lot_minimum");
+    submit(h.db, order("both-minima", { price: .2, size: 5 }));
+    expect(h.sink.snapshot().orders).toHaveLength(1);
+    h.sink.cancelAll();
+  });
+  it("rejects a late callback at the absolute deadline even when its book is still fresh", () => {
+    const f = fixture(c => { c.executionDeadlineUtc = clock.utc + 100; });
+    f.setClock({ utc: clock.utc + 100, mono: clock.mono + 100 });
+    expect(() => submit(f.db, order("late", { ts: clock.utc + 100, expected_cancel_ts: clock.utc + 5000 })))
+      .toThrow("execution_deadline");
+    expect(f.sink.snapshot().orders).toHaveLength(0);
+  });
+  it("rejects a received but unprocessed frame or disconnected source before quote commit", () => {
+    const f = fixture(c => { c.sourceFrontier = 1; });
+    f.setClock({ ...clock, sourceSequence: 2, sourceAvailable: true });
+    expect(() => submit(f.db, order("unprocessed"))).toThrow("unprocessed_or_closed_source_frontier");
+    f.setClock({ ...clock, sourceSequence: 1, sourceAvailable: false });
+    expect(() => submit(f.db, order("closed"))).toThrow("unprocessed_or_closed_source_frontier");
+    expect(f.sink.snapshot().orders).toHaveLength(0);
+    f.setClock({ ...clock, sourceSequence: 1, sourceAvailable: true });
+    submit(f.db, order("current")); f.sink.cancelAll();
   });
   it("invokes actual MakerLoop with real belief and loaded pinned regime gate, without network/fills", async () => {
     const f = fixture(); seed(f.db);
