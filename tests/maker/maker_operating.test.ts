@@ -16,7 +16,8 @@ afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); for (const dir of di
 function setup(options: { slots?: number; samples?: number; minimum?: number; faultAt?: number; stopAt?: number;
   badSampleAt?: number; afterSample?: (out: string) => void; emptyBookFirstAttempt?: boolean; malformedBookFirstAttempt?: boolean;
   mixedArchiveFaultFirstAttempt?: boolean; mixedBookSidesFirstAttempt?: boolean; missingMetadataAttempts?: number;
-  noEligibleAttempts?: number; malformedGammaIdentity?: boolean; tickChangeFirstAttempt?: boolean } = {}) {
+  noEligibleAttempts?: number; malformedGammaIdentity?: boolean; tickChangeFirstAttempt?: boolean;
+  backdatedDeltaFirstAttempt?: boolean; mixedBackdatedFirstAttempt?: boolean; duplicateBackdatedFirstAttempt?: boolean } = {}) {
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
   const out = mkdtempSync(path.resolve('reports/evidence/maker-operating-test-')); dirs.push(out);
   const runName = path.basename(out), hashes = operatingInputHashes(), protocolSha256 = sha(json(OPERATING_PROTOCOL));
@@ -86,6 +87,15 @@ function setup(options: { slots?: number; samples?: number; minimum?: number; fa
           if (options.tickChangeFirstAttempt && attempt === 1 && s === 14)
             await frame(hooks, { event_type: 'tick_size_change', market: CONDITION, asset_id: '111',
               old_tick_size: '0.01', new_tick_size: '0.001', timestamp: String(utc) });
+          if ((options.backdatedDeltaFirstAttempt || options.mixedBackdatedFirstAttempt || options.duplicateBackdatedFirstAttempt)
+            && attempt === 1 && s === 14) {
+            const change = { asset_id: '111', side: 'BUY', price: '0.49', size: '777',
+              best_bid: '0.49', best_ask: '0.51', hash: 'authored-stale-depth' };
+            const delta = { event_type: 'price_change', market: CONDITION, timestamp: String(utc - 2000),
+              price_changes: options.duplicateBackdatedFirstAttempt ? [change, { ...change, size: '778' }] : [change] };
+            await frame(hooks, options.mixedBackdatedFirstAttempt
+              ? [delta, { ...book(), event_type: 'book', bids: null }] : delta);
+          }
           const nextBid = s % 3 === 0 ? '0.48' : '0.49';
           if (s === 1 || s % 5 === 0) { priorBid = nextBid; await frame(hooks, { ...book(), event_type: 'book' }); }
           else {
@@ -178,11 +188,16 @@ describe('ordinary continuous operating integration, authored offline inputs onl
       expect(operatingUnavailableReason(Error(message))).toBe('empty_book');
     for (const message of ['maker_source:validated_tick_size_change', 'operating:Error: maker_source:validated_tick_size_change:'])
       expect(operatingUnavailableReason(Error(message))).toBe('tick_size_change');
+    for (const message of ['maker_source:validated_backdated_delta', 'operating:Error: maker_source:validated_backdated_delta:'])
+      expect(operatingUnavailableReason(Error(message))).toBe('backdated_delta');
     for (const cause of [
       Error('maker_operating:source_metadata:OBSERVED_MARKET_VOLUME_AND_LIQUIDITY,KNOWN_FEE_BOUND'),
       Error('operating:Error: maker_source:validated_tick_size_change:archive verification failed'),
       Error('operating:Error: maker_source:empty_book_side:Error: operating:archive_frame_hash'),
       Error('maker_source:tick_size_change'), Error('unsupported maker_source:validated_tick_size_change'),
+      Error('operating:Error: maker_source:validated_backdated_delta:archive verification failed'),
+      Error('maker_source:backdated_delta_mixed_frame'), Error('maker_source:backdated_delta'),
+      Error('maker_source:ambiguous_repeated_delta_level'),
       Error('maker_operating:original_market_not_eligible'),
       'maker_operating:original_market_not_eligible', { message: 'maker_source:validated_tick_size_change' },
     ]) expect(operatingUnavailableReason(cause)).toBeNull();
@@ -374,6 +389,33 @@ describe('ordinary continuous operating integration, authored offline inputs onl
     expect(old.snapshot.contract.book.tick).toBe('0.01'); expect(fresh.snapshot.contract.book.tick).toBe('0.001');
     expect(fresh.samples.records).toBeGreaterThanOrEqual(13); expect(state.status).toBe('OFFLINE_FINISHED');
     expect(state.virtualCashUSDC).toBe('100'); expect(state.pendingLiabilityNumerator).toBe('0');
+  });
+  it('does not apply a validated backdated singleton and quotes only after bounded fresh resync', async () => {
+    const f = setup({ backdatedDeltaFirstAttempt: true }); vi.spyOn(Date, 'now').mockImplementation(() => f.clock().utc);
+    const state = await f.run(), log = events(f.out);
+    expect(f.captures.map(c => c.attempt)).toEqual([1, 2]);
+    expect(f.captures.every(c => c.calls.join(',') === 'metadata,market,book,fee' && c.settled)).toBe(true);
+    const fault = log.find(e => e.kind === 'SOURCE_ATTEMPT_FAULT' && e.epoch === 1);
+    const terminal = log.find(e => e.kind === 'TERMINAL_RECONCILED' && e.epoch === 1);
+    const opened = log.find(e => e.kind === 'SOURCE_ATTEMPT_OPEN' && e.epoch === 2);
+    expect(fault.error).toContain('maker_source:validated_backdated_delta');
+    expect(terminal.terminal).toMatchObject({ syntheticCashUSDC: '100', pendingLiabilityUSDC: '0', fills: 0 });
+    expect(log.indexOf(terminal)).toBeLessThan(log.indexOf(opened)); expect(opened.at.utc - fault.at.utc).toBeGreaterThanOrEqual(2000);
+    const quotes = log.filter(e => e.kind === 'PAPER_QUOTE'); expect(quotes.filter(q => q.epoch === 1)).toHaveLength(1);
+    expect(quotes.some(q => q.at.utc >= fault.at.utc && q.at.utc < opened.at.utc)).toBe(false);
+    const fresh = JSON.parse(readFileSync(quotes.find(q => q.epoch === 2).evidence, 'utf8'));
+    expect(fresh.samples.records).toBeGreaterThanOrEqual(13); expect(fresh.feature.bidDepthTop).toBe(900);
+    expect(state.status).toBe('OFFLINE_FINISHED'); expect(state.virtualCashUSDC).toBe('100');
+    expect(state.pendingLiabilityNumerator).toBe('0'); expect(state.activeOrders).toBe(0);
+  });
+  it.each(['mixed_sibling', 'duplicate_level'] as const)('keeps a backdated %s frame fatal without availability masking', async kind => {
+    const f = setup(kind === 'mixed_sibling' ? { mixedBackdatedFirstAttempt: true } : { duplicateBackdatedFirstAttempt: true });
+    vi.spyOn(Date, 'now').mockImplementation(() => f.clock().utc);
+    const state = await f.run(); expect(state.totalQuotes).toBe(1); expect(f.captures).toHaveLength(1);
+    expect(state.status).toBe('STOPPED'); expect(state.stopReason).toBe('source_correctness_fault');
+    expect(events(f.out).some(e => e.kind === 'FRESH_RESYNC_GAP')).toBe(false);
+    expect(state.pendingLiabilityNumerator).toBe('0'); expect(state.activeOrders).toBe(0);
+    expect(terminalFiles(f.out)[0].terminal).toMatchObject({ syntheticCashUSDC: '100', pendingLiabilityUSDC: '0', fills: 0 });
   });
   it('keeps a combined empty-book and archive failure fatal after a quote', async () => {
     const f = setup({ mixedArchiveFaultFirstAttempt: true }); vi.spyOn(Date, 'now').mockImplementation(() => f.clock().utc);
