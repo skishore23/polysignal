@@ -15,13 +15,13 @@ export const sha = (raw: string | Buffer) => createHash("sha256").update(raw).di
 const json = (value: unknown) => JSON.stringify(value, null, 2) + "\n";
 function check(ok: unknown, reason: string): asserts ok { if (!ok) throw Error("paper_startup:" + reason); }
 export const RUN_PROTOCOL = {
-  schema: "CODEX_PAPER_STARTUP_PROTOCOL_V3", evidence: "PUBLIC_DEVELOPMENT_INPUTS_ONLY",
+  schema: "CODEX_PAPER_STARTUP_PROTOCOL_V4", evidence: "PUBLIC_DEVELOPMENT_INPUTS_ONLY",
   metadataRecipe: "CURRENT_FIVE_MINUTE_SLOT_BY_DOCUMENTED_SLUG",
   metadataUrlTemplate: "https://gamma-api.polymarket.com/markets/slug/btc-updown-5m-{slotStartSeconds}",
   versions: ["v1", "v2"], maxReads: 4,
   perReadBodyBytes: 2097152, maxBodyBytes: 8388608, maxMessages: 1000, maxWallMs: 300000,
   byteScope: "application response/message bodies; framing and TLS/network bytes unknown",
-  account: { cashUSDC: "10", shares: "0", pending: "0", perOrderUSDC: "2", totalLossUSDC: "2", exposureUSDC: "4" },
+  account: { cashUSDC: "10", shares: "0", pending: "0", paperProfile: "OWNER_6_USDC", perOrderUSDC: "6", totalLossUSDC: "6", exposureUSDC: "6", quoteSizing: "original configured target, rounded downward only" },
   fills: false, liveOrders: false, reconnect: false, retries: false, redirects: false,
   outcome: "original first outcome; preserve label and choose IDs by explicit protocol version",
   stop: "first risk-valid quote, market close, source failure, or original finite limit",
@@ -30,7 +30,7 @@ const ENTRY_INPUTS = [
   "scripts/research/maker_paper_startup.ts", "scripts/research/maker_startup_capture.ts",
   "scripts/research/maker_startup_source_bridge.ts", "scripts/research/maker_quote_startup.ts",
   "tests/maker/fixtures/startup-canonical-schema.sql", "configs/worker.json",
-  "apps/worker/src/maker/MakerLoop.ts", "apps/worker/src/belief/BeliefEngine.ts",
+  "apps/worker/src/maker/MakerLoop.ts", "apps/worker/src/maker/quoteSizing.ts", "apps/worker/src/belief/BeliefEngine.ts",
   "apps/worker/src/belief/MicrostructureBeliefProvider.ts", "apps/worker/src/regime/RegimeGate.ts",
   "apps/worker/src/trading/MarketProfile.ts", "packages/features/src/featureEngine.ts",
   "data/markov_regime.json", "data/strategy_regime_report.json", "data/regime_manifest.json",
@@ -105,12 +105,12 @@ export function selectCurrentBtcMarket(capture: Pick<RawCapture, "raw" | "at" | 
     selected: candidates[0] ?? null, raw_body_sha256: sha(capture.raw), quote_phase_admitted: false, rejected };
 }
 
-type Admission = { schema: "CODEX_PAPER_STARTUP_ADMISSION_V3"; executionAdmitted: true;
+type Admission = { schema: "CODEX_PAPER_STARTUP_ADMISSION_V4"; executionAdmitted: true;
   inputMode: "CURRENT_PUBLIC_CAPTURE" | "OFFLINE_FIXTURE"; runName: string; notBeforeUtcMs: number; expiresUtcMs: number;
   marketStartUtcMs?: number; metadataUrl?: string;
   protocolSha256: string; inputSha256: Record<string, string>; reviewFile: string; reviewSha256: string };
 export function validateAdmission(a: Admission, now: StartupClock, offlineInjection = false) {
-  check(a.schema === "CODEX_PAPER_STARTUP_ADMISSION_V3" && a.executionAdmitted === true, "independent_admission_required");
+  check(a.schema === "CODEX_PAPER_STARTUP_ADMISSION_V4" && a.executionAdmitted === true, "independent_admission_required");
   check(["CURRENT_PUBLIC_CAPTURE", "OFFLINE_FIXTURE"].includes(a.inputMode)
     && (!offlineInjection || a.inputMode === "OFFLINE_FIXTURE"), "test_transport_in_live_evidence");
   check(/^maker-startup-[a-zA-Z0-9_-]{1,80}$/.test(a.runName), "run_identity");
@@ -182,7 +182,7 @@ export async function runPaperStartup(admissionFile: string, test?: {
     return { ...now(), sourceSequence: f.sequence, sourceAvailable: f.open }; };
   writeFileSync(path.join(out, "frozen-admission.json"), rawAdmission, { flag: "wx" });
   writeFileSync(path.join(out, "frozen-protocol.json"), json(RUN_PROTOCOL), { flag: "wx" });
-  const result: any = { schema: "CODEX_PAPER_STARTUP_RESULT_V3", inputMode: admission.inputMode,
+  const result: any = { schema: "CODEX_PAPER_STARTUP_RESULT_V4", inputMode: admission.inputMode,
     status: "STARTING", actualQuotes: 0, fills: 0, profitUSDC: null, actualAccountChargeUSD: null,
     admissionSha256: sha(rawAdmission), traces: [], startedAt: now() };
   const stream: BridgeStreamItem[] = [], seenTrades = new Set<string>();
@@ -205,9 +205,9 @@ export async function runPaperStartup(admissionFile: string, test?: {
     const permanentGaps = initial.missing.filter(x => !["OBSERVED_VOLATILITY_HISTORY", "OBSERVED_ORIGINAL_TOKEN_TRADE_FLOW",
       "CURRENT_CANONICAL_FEATURE_SAMPLE", "FRESH_AUTHORITATIVE_ORIGINAL_BOOK"].includes(x));
     if (permanentGaps.length) { result.status = "SOURCE_METADATA_INCOMPLETE"; result.missing = permanentGaps; return result; }
-    if (Number(initial.book.minimum) > 2) {
+    if (Number(initial.book.minimum) > Number(RUN_PROTOCOL.account.perOrderUSDC)) {
       result.status = "SKIP_VENUE_NOTIONAL_MINIMUM_EXCEEDS_PAPER_CAP";
-      result.constraint = { venueMinimumNotionalUSDC: initial.book.minimum, perOrderUSDC: "2", totalLossUSDC: "2" };
+      result.constraint = { venueMinimumNotionalUSDC: initial.book.minimum, perOrderUSDC: RUN_PROTOCOL.account.perOrderUSDC, totalLossUSDC: RUN_PROTOCOL.account.totalLossUSDC };
       return result;
     }
     await capture.stream({ shouldStop: () => stop,
@@ -220,7 +220,7 @@ export async function runPaperStartup(admissionFile: string, test?: {
         result.traces.push(trace);
         if (d.missing.length || at.mono - lastTick < 10000) return;
         const captureSha256 = sha(json({ gamma, selection, clobMarket, clobBook, tokenFee, stream }));
-        const contract: StartupContract = { purpose: admission.inputMode === "OFFLINE_FIXTURE" ? "SYNTHETIC_OFFLINE_ENGINEERING" : "PROSPECTIVE_PAPER_ENGINEERING",
+        const contract: StartupContract = { paperProfile: RUN_PROTOCOL.account.paperProfile, purpose: admission.inputMode === "OFFLINE_FIXTURE" ? "SYNTHETIC_OFFLINE_ENGINEERING" : "PROSPECTIVE_PAPER_ENGINEERING",
           executionDeadlineUtc: Math.min(admission.expiresUtcMs, s.end_utc_ms),
           sourceFrontier: stream.filter(x => x.kind === "frame").length,
           market: d.identity.market, condition: d.identity.condition, wallet: 1,

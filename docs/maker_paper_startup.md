@@ -14,9 +14,12 @@ aggregate pending loss before accepting a SHADOW quote. It never resizes an engi
 action to obtain acceptance. The ordinary policy and regime gates remain intact.
 
 The declared opening is simulated cash 10 USDC, zero shares and zero orders.
-Unchanged limits are 2 USDC/order, 2 USDC total pending loss, and 4 USDC exposure.
-If the venue's USDC minimum exceeds 2, the correct result is a proved skip. A
-larger paper allowance is not inferred from the request to start. Every accepted
+The owner explicitly selected the prospective six-USDC paper profile: 6 USDC/order,
+6 USDC total pending loss and 6 USDC exposure. Previous frozen two-USDC runs stay
+unchanged. The default historical sink profile remains two USDC. The ordinary
+configured 10-share target and its regime scaling stay unchanged; the optional
+venue sizing seam only rounds/clamps downward. It skips when either original
+minimum cannot fit the target, inventory or cap. No larger target is inferred. Every accepted
 quote is locally cancelled and reservations released; no fills, paid fees,
 settlement, real profit or economic advantage follows from this trace.
 
@@ -24,10 +27,12 @@ settlement, real profit or economic advantage follows from this trace.
 
 The V2 engineering attempt fetched one broad metadata page and found no eligible
 current candidate. Its consumed admission and source evidence remain unchanged.
-This prospective V3 recipe fixes that demonstrated lookup problem using the
+The subsequent V3 recipe fixes that demonstrated lookup problem using the
 documented exact-slug route. The fourth read is required by the ordinary maker's
 token-specific fee/profile gate. No earlier frozen evaluation or source attempt
-is rewritten. The old total-ingress assurance failure remains valid.
+is rewritten. The old total-ingress assurance failure remains valid. V4 separately freezes the
+owner-selected six-USDC profile and exact downward-only venue sizing; consumed
+V2/V3 source attempts are never rewritten.
 
 1. One public Gamma `/markets/slug/btc-updown-5m-{slotStartSeconds}` object.
    The original five-minute slot, exact URL and request window are frozen before

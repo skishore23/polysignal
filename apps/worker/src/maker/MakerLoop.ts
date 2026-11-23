@@ -1,4 +1,5 @@
 import type { Logger } from "../logger";
+import { sizeMakerQuote } from "./quoteSizing";
 import { TaskScheduler } from "../utils/TaskScheduler";
 import type { LiveExecutionGateway } from "../execution/clobExecution";
 import { BeliefEngine, type BeliefContext } from "../belief";
@@ -57,6 +58,9 @@ type MakerDeps = {
   belief: BeliefEngine;
   execution?: LiveExecutionGateway;
   regimeGate?: RegimeGate;
+  quoteConstraints?: (tokenId: string, marketId: string | null) => {
+    minimumShares: string; minimumNotionalUSDC: string; shareIncrement: string;
+  } | null;
 };
 
 type FeatureRow = {
@@ -597,11 +601,11 @@ export class MakerLoop {
         const askRegimeMultiplier = this.resolveRegimeSizeMultiplier(askRegime.sizeMultiplier);
 
         const sizeBase = this.config.quoteSize * Math.max(0.1, wallet.sizeMultiplier || 1);
-        const bidSize = Math.max(
+        const rawBidSize = Math.max(
           1,
           Math.min(sizeBase * bidRegimeMultiplier, this.config.maxNotionalPerOrderUsd / bidPx)
         );
-        const askSize = Math.max(
+        const rawAskSize = Math.max(
           1,
           Math.min(sizeBase * askRegimeMultiplier, this.config.maxNotionalPerOrderUsd / askPx)
         );
@@ -609,6 +613,20 @@ export class MakerLoop {
           maxInv * clamp(bidRegimeMultiplier, modulation.inventoryScaleFloor, modulation.inventoryScaleCap);
         const effectiveMaxInvAsk =
           maxInv * clamp(askRegimeMultiplier, modulation.inventoryScaleFloor, modulation.inventoryScaleCap);
+
+        // Optional venue-bound paper seam; ordinary callers retain their existing sizing.
+        // Only round/clamp downward. A venue minimum never increases the engine target.
+        const constraints = this.deps.quoteConstraints?.(feature.tokenId, feature.marketId);
+        const sizeBound = (price: number, target: number, room: number) => constraints
+          ? sizeMakerQuote({ ...constraints, price, targetShares: target, maximumShares: Math.max(0, room),
+            maximumNotionalUSDC: this.config.maxNotionalPerOrderUsd })
+          : { size: null, reason: "INVALID_QUOTE_SIZING_INPUT" };
+        const boundedBid = this.deps.quoteConstraints ? sizeBound(bidPx, sizeBase * bidRegimeMultiplier, effectiveMaxInvBid - position) : null;
+        const boundedAsk = this.deps.quoteConstraints ? sizeBound(askPx, sizeBase * askRegimeMultiplier, effectiveMaxInvAsk + position) : null;
+        const bidSize = boundedBid?.size ?? rawBidSize;
+        const askSize = boundedAsk?.size ?? rawAskSize;
+        const bidSizeValid = !this.deps.quoteConstraints || boundedBid?.size != null;
+        const askSizeValid = !this.deps.quoteConstraints || boundedAsk?.size != null;
 
         const invPenaltyBid =
           Math.max(0, Math.abs(position + bidSize) - Math.abs(position)) * this.config.inventoryLambdaBps;
@@ -750,6 +768,7 @@ export class MakerLoop {
 
         const canBid =
           this.config.enableBidQuotes &&
+          bidSizeValid &&
           bidRegime.allowed &&
           bidEvDecision.ok &&
           bidMarketGate.ok &&
@@ -757,13 +776,25 @@ export class MakerLoop {
           position + bidSize <= effectiveMaxInvBid;
         const canAsk =
           this.config.enableAskQuotes &&
+          askSizeValid &&
           askRegime.allowed &&
           askEvDecision.ok &&
           askMarketGate.ok &&
           askEdgeSanity.ok &&
           position - askSize >= -effectiveMaxInvAsk;
 
-        if (!bidRegime.allowed) {
+        for (const [kind, valid, sized, order, size, enabled] of [
+          ["MAKER_BID", bidSizeValid, boundedBid, openBidOrder, bidSize, this.config.enableBidQuotes],
+          ["MAKER_ASK", askSizeValid, boundedAsk, openAskOrder, askSize, this.config.enableAskQuotes]
+        ] as const) {
+          if (enabled && !valid) {
+            if (order) await this.cancelOpenOrder(order, ts);
+            this.logSkipDecision({ ts, tokenId: feature.tokenId, walletId: wallet.walletId, kind,
+              decisionReason: `quote_size:${sized?.reason}`, mid, spread, bid, ask, bidDepth, askDepth, pHat, size });
+          }
+        }
+
+        if (!bidRegime.allowed && bidSizeValid) {
           if (openBidOrder) {
             await this.cancelOpenOrder(openBidOrder, ts);
           }
@@ -784,7 +815,7 @@ export class MakerLoop {
           });
         }
 
-        if (!askRegime.allowed) {
+        if (!askRegime.allowed && askSizeValid) {
           if (openAskOrder) {
             await this.cancelOpenOrder(openAskOrder, ts);
           }

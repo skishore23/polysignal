@@ -3,7 +3,7 @@ import { readFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { newOfflineDatabase, installStartupSink, oneOfflineMakerTick, type StartupContract, type StartupClock } from "../../scripts/research/maker_quote_startup";
+import { newOfflineDatabase, installStartupSink, oneOfflineMakerTick, PAPER_PROFILES, type StartupContract, type StartupClock } from "../../scripts/research/maker_quote_startup";
 
 const schema = readFileSync("tests/maker/fixtures/startup-canonical-schema.sql", "utf8");
 const bindings: Record<string, string> = {
@@ -75,6 +75,86 @@ describe("isolated no-fill maker startup boundary", () => {
     expect(f.sink.snapshot().orders).toHaveLength(1); expect(f.sink.snapshot().decisions).toHaveLength(1);
     expect(f.sink.snapshot().pendingLiabilityNumerator).toBe("1000000000000000000");
   });
+  it("pins both immutable paper profiles without increasing the synthetic ten-USDC opening", () => {
+    expect(PAPER_PROFILES).toEqual({
+      INITIAL_2_USDC: { perOrderUSDC: "2", totalLossUSDC: "2", exposureUSDC: "4", quoteSizeTargetShares: null },
+      OWNER_6_USDC: { perOrderUSDC: "6", totalLossUSDC: "6", exposureUSDC: "6", quoteSizeTargetShares: null },
+    });
+    expect(Object.isFrozen(PAPER_PROFILES)).toBe(true);
+    expect(Object.isFrozen(PAPER_PROFILES.OWNER_6_USDC)).toBe(true);
+    expect(Object.isFrozen(PAPER_PROFILES.INITIAL_2_USDC)).toBe(true);
+    const f = fixture(c => { c.paperProfile = "OWNER_6_USDC"; });
+    expect(f.sink.snapshot().opening).toMatchObject({ cashUSDC: "10", paperProfile: "OWNER_6_USDC",
+      limits: PAPER_PROFILES.OWNER_6_USDC, shares: { "fixture-yes": "0", "fixture-no": "0" },
+      funding: "synthetic_offline_only", paidFees: null, creditedRewards: null, profit: null });
+  });
+  it.each([3, 6])("accepts an OWNER_6_USDC order of %s USDC, including the exact six-USDC limit", (notional) => {
+    const f = fixture(c => { c.paperProfile = "OWNER_6_USDC"; });
+    submit(f.db, order("owner-six", { size: notional * 2 }));
+    expect(f.sink.snapshot().orders).toHaveLength(1); expect(f.sink.snapshot().decisions).toHaveLength(1);
+    expect(f.sink.snapshot().pendingLiabilityNumerator).toBe((BigInt(notional) * 10n ** 18n).toString());
+    expect(f.sink.cancelAll()).toMatchObject({ syntheticCashUSDC: "10", pendingLiabilityUSDC: "0", fills: 0, profitUSDC: null });
+  });
+  it("rejects OWNER_6_USDC principal above six with an atomic rollback", () => {
+    const f = fixture(c => { c.paperProfile = "OWNER_6_USDC"; });
+    expect(() => submit(f.db, order("over-six", { size: 12.02 }))).toThrow("order_cap");
+    expect(f.sink.snapshot().orders).toHaveLength(0); expect(f.sink.snapshot().decisions).toHaveLength(0);
+    expect(f.sink.snapshot().pendingLiabilityNumerator).toBe("0");
+  });
+  it("includes fee liability in the OWNER_6_USDC per-order boundary", () => {
+    const f = fixture(c => { c.paperProfile = "OWNER_6_USDC"; c.fee!.perShareUSDC = "0.1"; });
+    // Ten shares reserve five principal plus one fee; fees are reserved, never paid.
+    submit(f.db, order("six-including-fee", { size: 10 }));
+    expect(f.sink.snapshot().pendingLiabilityNumerator).toBe("6000000000000000000");
+    f.sink.cancelAll();
+    expect(() => submit(f.db, order("fee-over-six", { size: 10.01 }))).toThrow("order_cap");
+    expect(f.sink.snapshot().orders).toHaveLength(1);
+    expect(f.sink.snapshot().opening.paidFees).toBeNull();
+  });
+  it("accepts exactly six aggregate OWNER_6_USDC pending liability and rejects the next valid small order", () => {
+    const f = fixture(c => { c.paperProfile = "OWNER_6_USDC"; });
+    submit(f.db, order("first-three", { size: 6 })); submit(f.db, order("second-three", { size: 6 }));
+    expect(f.sink.snapshot().pendingLiabilityNumerator).toBe("6000000000000000000");
+    expect(() => submit(f.db, order("aggregate-over-six", { size: 1 }))).toThrow("aggregate_pending_loss");
+    expect(f.sink.snapshot().orders).toHaveLength(2); expect(f.sink.snapshot().decisions).toHaveLength(2);
+    expect(f.sink.snapshot().opening.cashUSDC).toBe("10");
+    f.sink.cancelAll(); submit(f.db, order("released-six", { size: 12 }));
+    expect(f.sink.snapshot().pendingLiabilityNumerator).toBe("6000000000000000000");
+    f.sink.cancelAll();
+  });
+  it("keeps the omitted profile at INITIAL_2_USDC, with its original per-order and aggregate bounds", () => {
+    const f = fixture();
+    expect(f.sink.snapshot().opening).toMatchObject({ paperProfile: "INITIAL_2_USDC", limits: PAPER_PROFILES.INITIAL_2_USDC });
+    expect(() => submit(f.db, order("default-over-two", { size: 4.02 }))).toThrow("order_cap");
+    submit(f.db, order("default-exact-two", { size: 4 }));
+    expect(() => submit(f.db, order("default-aggregate-over-two", { size: 1 }))).toThrow("aggregate_pending_loss");
+    expect(f.sink.snapshot().orders).toHaveLength(1); f.sink.cancelAll();
+  });
+  it("denies profile replacement and synthetic funding changes through observation, input or opening records", () => {
+    const f = fixture(c => { c.paperProfile = "OWNER_6_USDC"; });
+    const next = structuredClone(f.c); next.paperProfile = "INITIAL_2_USDC";
+    expect(() => f.sink.updateObservation(next)).toThrow("observation_identity_or_terms_change");
+    f.c.paperProfile = "INITIAL_2_USDC"; f.sink.snapshot().contract.paperProfile = "INITIAL_2_USDC";
+    const record = { ...f.sink.snapshot().opening, cashUSDC: "100", paperProfile: "INITIAL_2_USDC" };
+    expect(() => f.db.prepare("UPDATE startup_opening SET record=?").run(JSON.stringify(record))).toThrow("immutable_opening");
+    expect(() => f.db.prepare("INSERT INTO startup_opening(record) VALUES (?)").run(JSON.stringify(record))).toThrow("immutable_opening");
+    expect(() => f.db.exec("DELETE FROM startup_opening")).toThrow("immutable_opening");
+    expect(f.sink.snapshot().opening).toMatchObject({ cashUSDC: "10", paperProfile: "OWNER_6_USDC" });
+    submit(f.db, order("still-six", { size: 12 })); f.sink.cancelAll();
+    const initial = fixture(); const raised = structuredClone(initial.c); raised.paperProfile = "OWNER_6_USDC";
+    expect(() => initial.sink.updateObservation(raised)).toThrow("observation_identity_or_terms_change");
+    expect(() => submit(initial.db, order("no-profile-upgrade", { size: 6 }))).toThrow("order_cap");
+  });
+  it("rejects an unrecognized paper profile instead of accepting custom limits", () => {
+    expect(() => fixture(c => { c.paperProfile = "OWNER_7_USDC" as StartupContract["paperProfile"]; }))
+      .toThrow("unsupported_paper_profile");
+  });
+  it.each([{ execution_mode: "FULL" }, { execution_mode: "LIVE" }, { external_order_id: "venue-order" }])(
+    "keeps OWNER_6_USDC paper-only for %j", changes => {
+      const f = fixture(c => { c.paperProfile = "OWNER_6_USDC"; });
+      expect(() => submit(f.db, order("no-live-authority", { size: 12, ...changes }))).toThrow("mode_or_fill");
+      expect(f.sink.snapshot().orders).toHaveLength(0); expect(f.sink.snapshot().decisions).toHaveLength(0);
+    });
   it.each([
     ["sell", { side: "SELL", kind: "MAKER_ASK" }], ["wrong token", { token_id: "fixture-no" }],
     ["wrong market", { market_id: "wrong" }], ["tick", { price: .499 }], ["lot", { size: 1.001 }],

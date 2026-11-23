@@ -63,7 +63,7 @@ function setup(minimum = 0.1, failure = false, offset = 0, lateSample?: number) 
   const hashes = inputHashes(), protocolSha256 = sha(text(RUN_PROTOCOL));
   const reviewFile = path.join(out, "authored-offline-review.json");
   writeFileSync(reviewFile, text({ decision: "APPROVE_BOUNDED_PAPER_STARTUP_RUN", runName, inputMode: "OFFLINE_FIXTURE", protocolSha256, inputSha256: hashes }));
-  const admission: any = { schema: "CODEX_PAPER_STARTUP_ADMISSION_V3", executionAdmitted: true,
+  const admission: any = { schema: "CODEX_PAPER_STARTUP_ADMISSION_V4", executionAdmitted: true,
     inputMode: "OFFLINE_FIXTURE", runName, notBeforeUtcMs: start + offset, expiresUtcMs: start + offset + 300000,
     protocolSha256, inputSha256: hashes, reviewFile, reviewSha256: sha(readFileSync(reviewFile)) };
   const file = path.join(out, "authored-admission.json"); writeFileSync(file, text(admission));
@@ -124,10 +124,10 @@ describe("complete no-fill startup wiring", () => {
     } finally { date.mockRestore(); }
   });
   it("reports a provable incompatible notional minimum without manufacturing a quote", async () => {
-    const f = setup(5); const result = await runPaperStartup(f.file, { clock: f.clock, capture: f.capture });
+    const f = setup(7); const result = await runPaperStartup(f.file, { clock: f.clock, capture: f.capture });
     expect(result.status).toBe("SKIP_VENUE_NOTIONAL_MINIMUM_EXCEEDS_PAPER_CAP");
     expect(result.actualQuotes).toBe(0); expect(result.fills).toBe(0); expect(result.profitUSDC).toBeNull();
-    expect(result.constraint).toEqual({ venueMinimumNotionalUSDC: "5", perOrderUSDC: "2", totalLossUSDC: "2" });
+    expect(result.constraint).toEqual({ venueMinimumNotionalUSDC: "7", perOrderUSDC: "6", totalLossUSDC: "6" });
   });
   it("retains source failure and never calls it a started maker", async () => {
     const f = setup(0.1, true); const result = await runPaperStartup(f.file, { clock: f.clock, capture: f.capture });

@@ -9,7 +9,13 @@ import { RegimeGate } from "../../apps/worker/src/regime/RegimeGate";
 
 export type StartupClock = { utc: number; mono: number; sourceSequence?: number; sourceAvailable?: boolean };
 type Clock = StartupClock;
+export const PAPER_PROFILES = Object.freeze({
+  INITIAL_2_USDC: Object.freeze({ perOrderUSDC: "2", totalLossUSDC: "2", exposureUSDC: "4", quoteSizeTargetShares: null }),
+  OWNER_6_USDC: Object.freeze({ perOrderUSDC: "6", totalLossUSDC: "6", exposureUSDC: "6", quoteSizeTargetShares: null }),
+});
+export type PaperProfile = keyof typeof PAPER_PROFILES;
 type ContractFields = {
+  paperProfile?: PaperProfile;
   executionDeadlineUtc?: number;
   sourceFrontier?: number;
   market: string; condition: string; wallet: number;
@@ -30,6 +36,7 @@ const SCALE = 1_000_000_000n;
 const USD = SCALE * SCALE;
 const isolatedDatabases = new WeakSet<Database.Database>();
 const guardedDatabases = new WeakSet<Database.Database>();
+const installedContracts = new WeakMap<Database.Database, () => StartupContract>();
 // Exact original decimals, up to nine places; unsupported precision fails instead of rounding.
 function decimal(value: unknown): bigint {
   if (typeof value !== "string" && typeof value !== "number") throw Error("decimal_type");
@@ -62,6 +69,9 @@ export const newOfflineDatabase = newIsolatedStartupDatabase;
 export function installStartupSink(db: Database.Database, input: StartupContract, now: () => Clock) {
   requireThat(isolatedDatabases.has(db), "exclusive_offline_database_required");
   let contract: StartupContract = JSON.parse(JSON.stringify(input));
+  const profileName = contract.paperProfile ?? "INITIAL_2_USDC";
+  requireThat(profileName === "INITIAL_2_USDC" || profileName === "OWNER_6_USDC", "unsupported_paper_profile");
+  const limits = PAPER_PROFILES[profileName];
   requireThat(contract.purpose === "SYNTHETIC_OFFLINE_ENGINEERING"
     || contract.purpose === "PROSPECTIVE_PAPER_ENGINEERING", "unsupported_purpose");
   if (contract.purpose === "PROSPECTIVE_PAPER_ENGINEERING") {
@@ -93,6 +103,7 @@ export function installStartupSink(db: Database.Database, input: StartupContract
   const observations: StartupContract[] = [JSON.parse(JSON.stringify(contract))];
   let last = now();
   const opening = JSON.stringify({ cashUSDC: "10", shares: Object.fromEntries(contract.tokens.map(t => [t, "0"])),
+    paperProfile: profileName, limits,
     funding: contract.purpose === "SYNTHETIC_OFFLINE_ENGINEERING" ? "synthetic_offline_only" : "explicit_synthetic_paper_opening",
     inputEvidence: contract.purpose === "SYNTHETIC_OFFLINE_ENGINEERING" ? "OFFLINE_FIXTURE" : "CURRENT_PUBLIC_CAPTURE",
     purpose: contract.purpose, paidFees: null, creditedRewards: null, settlement: null, profit: null });
@@ -141,8 +152,9 @@ export function installStartupSink(db: Database.Database, input: StartupContract
     requireThat(integerTime(o.ts) && o.ts >= b.receipt.utc && o.ts <= clock.utc
       && integerTime(o.expected_cancel_ts) && o.expected_cancel_ts > clock.utc && o.expected_cancel_ts <= o.ts + 5000, "order_clock");
     const own = liability(o), total = own + existing.reduce((sum, row) => sum + liability(row), 0n);
-    requireThat(own <= 2n * USD, "order_cap");
-    requireThat(total <= 2n * USD && total <= 4n * USD && total <= 10n * USD, "aggregate_pending_loss");
+    requireThat(own <= decimal(limits.perOrderUSDC) * SCALE, "order_cap");
+    requireThat(total <= decimal(limits.totalLossUSDC) * SCALE && total <= decimal(limits.exposureUSDC) * SCALE
+      && total <= 10n * USD, "aggregate_pending_loss");
     return { ...clock };
   }
   // JSON binds actual persisted row fields; rejection receipts survive engine transaction rollback.
@@ -180,6 +192,7 @@ export function installStartupSink(db: Database.Database, input: StartupContract
     CREATE TRIGGER startup_decision_delete BEFORE DELETE ON decision_log BEGIN SELECT RAISE(ABORT,'startup:immutable_decision'); END;
   `);
   guardedDatabases.add(db);
+  installedContracts.set(db, () => contract);
   return {
     rejections,
     /** Refresh causal book evidence only while no accepted quote can carry a liability. */
@@ -228,12 +241,21 @@ export function createIsolatedMaker(db: Database.Database, config: any, logger: 
   const gate = new RegimeGate(config.regimeGating, logger);
   requireThat(gate.getLoadDiagnostics().loaded && !gate.getLoadDiagnostics().usingLastGood, "regime_not_loaded");
   const belief = new BeliefEngine([new MicrostructureBeliefProvider()], config.belief, { sqlite: db, logger });
+  const getContract = installedContracts.get(db)!;
+  const limits = PAPER_PROFILES[getContract().paperProfile ?? "INITIAL_2_USDC"];
   const engine = new MakerLoop({ ...config.makerEv, ...config.fees,
     intervalMs: 10000, orderTtlMs: 5000, executionMode: "PAPER", marketScope: "PROFILE_KNOWN_ONLY",
     regimeModulation: config.regimeGating.modulation,
     // Registered scope overrides only; no change to ordinary EV/flow/belief/regime policy.
-    maxNotionalPerOrderUsd: 2, enableBidQuotes: true, enableAskQuotes: false,
-    rebateShareAssumption: 0, liquidityRewardBpsWhenScoring: 0 }, { sqlite: db, logger, belief, regimeGate: gate });
+    quoteSize: limits.quoteSizeTargetShares ?? config.makerEv.quoteSize,
+    maxNotionalPerOrderUsd: Number(limits.perOrderUSDC), enableBidQuotes: true, enableAskQuotes: false,
+    rebateShareAssumption: 0, liquidityRewardBpsWhenScoring: 0 }, { sqlite: db, logger, belief, regimeGate: gate,
+    quoteConstraints: getContract().paperProfile === "OWNER_6_USDC" ? (tokenId, marketId) => {
+      const c = getContract();
+      if (c.market !== marketId || c.book.token !== tokenId) return null;
+      return { minimumShares: c.book.minimumShares ?? (c.book.minimumUnit !== "USDC_NOTIONAL" ? c.book.minimum : "0"),
+        minimumNotionalUSDC: c.book.minimumUnit === "USDC_NOTIONAL" ? c.book.minimum : "0", shareIncrement: c.book.lot };
+    } : undefined });
   return { tick: () => (engine as any).tick() as Promise<void>, getGateDiagnostics: () => gate.getLoadDiagnostics() };
 }
 
