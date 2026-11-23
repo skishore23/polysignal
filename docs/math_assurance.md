@@ -45,6 +45,10 @@ Basket costs are summed as currency amounts and only then divided by one declare
 
 ## Runtime accounting v1
 
+The schema remains v1. Reports use `shadow-accounting-v2` to distinguish the
+maker-rule validation below from previously saved report semantics, including
+when a release code hash is unavailable. Saved reports remain readable unchanged.
+
 Migration `0048_accounting_events.sql` introduces immutable, idempotent postings for opening state, transfers, fills, settlements and corrections. `postAccountingEvent` validates known cash/share/fee identities before insertion. A confirmed or simulated correction names a prior event in the same account and excludes it from subsequent reports; failed corrections have no effect, and provisional corrections leave the target intact while marking the report incomplete; a replacement is a separate posting. Events carry source identity, account/order/trade/token references, event and receipt times, finality independent of order status, fee evidence, rule version, rounding policy and collateral asset. A paper fill and its order-state update commit in one SQLite transaction. A repeated event key with changed economics is rejected.
 
 New shadow fills use `SIMULATED` finality. Taker fees are modeled from the current paper fee scenario when token metadata identifies a supported profile; an unknown profile produces `MISSING` fee evidence. Maker and inventory-rebalance fills assume zero fee under `paper-maker-zero-fee-v1`; no rebate or reward is credited. Neither modeled treatment is evidence of a venue debit. Actual observed cash/share movements can be posted with `OBSERVED` fee evidence by a future import adapter. Existing fills are not backfilled.
@@ -62,6 +66,15 @@ A matching event key only discharges a retained fill gap when it identifies a `F
 The posting must also match the retained order ID, token, side, gross size, price and event timestamp. The paper runtime persists these exact values together; an inconsistent or rounded import cannot silently complete reconciliation. Seven focused cases cover each mismatch and an exact match. A mismatched posting remains visible in the event trace, but the retained fill gap keeps `complete=false` and `netPnl=null`. This is a consistency check, not verification of the source, venue fills, funding or settlement.
 
 A retained fill also remains unposted when an eligible confirmed or simulated correction voids its matching posting. The gap check applies the fold's account, finality, event-time and receipt-time correction rules. Failed and out-of-scope corrections leave the posting active; a provisional correction leaves it active but makes the report incomplete. Six regression cases cover those distinctions, cutoff advancement and saved-report immutability. Voiding a posting does not erase the retained shadow fill or establish that its execution never occurred. Replacement/import reconciliation beyond the existing event-key contract remains unsupported.
+
+`paper-maker-zero-fee-v1` specifically declares a modeled zero USDC fee. New
+fill postings that contradict its amount, asset or evidence classification are
+rejected. Older contradictory postings remain in the report event trace and
+produce `INVALID_MAKER_FEE_RULE`, `complete=false` and `netPnl=null`; their
+movements are excluded from the partial fold. Partial cash/share totals are not
+reconciled balances. Other rule versions retain their existing fee validation,
+including observed nonzero fees. This check verifies the named paper scenario,
+not paid venue fees or the authenticity of an observed-fee import.
 
 ## Not yet certified
 

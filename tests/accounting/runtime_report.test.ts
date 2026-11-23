@@ -45,6 +45,63 @@ describe('runtime accounting event to report', () => {
     await Promise.all(opened.map(destroyTempDb));
   });
 
+  it.each(['amount', 'asset', 'evidence', 'exact', 'other-rule'] as const)(
+    'checks the declared maker fee rule for new and retained postings: %s',
+    async (scenario) => {
+      const db = await createTempDb();
+      opened.push(db);
+      postAccountingEvent(db.sqlite, event({
+        eventKey: 'opening', kind: 'OPENING', sourceRef: 'opening', cashDelta: 10,
+      }));
+      const orderId = Number(db.sqlite.prepare(`INSERT INTO shadow_orders
+        (ts, wallet_id, token_id, side, kind, execution_mode)
+        VALUES (?, 7, 't', 'BUY', 'MAKER_BID', 'SHADOW')`).run(base).lastInsertRowid);
+      const fillId = Number(db.sqlite.prepare(`INSERT INTO shadow_fills
+        (ts, order_id, price, size, method) VALUES (?, ?, 0.5, 1, 'trade_match')`)
+        .run(base, orderId).lastInsertRowid);
+      const invalid = ['amount', 'asset', 'evidence'].includes(scenario);
+      const fee = scenario === 'amount' || scenario === 'other-rule' ? 0.1 : 0;
+      const posting = event({
+        eventKey: `shadow-fill:${fillId}`, kind: 'FILL', sourceRef: String(fillId),
+        source: 'shadow:trade_match', orderId, tokenId: 't', side: 'BUY',
+        grossShares: 1, netSharesDelta: 1, price: 0.5, cashDelta: -0.5 - fee,
+        feeAsset: scenario === 'asset' ? 'SHARES' : 'USDC', feeAmount: fee,
+        feeEvidence: scenario === 'evidence' || scenario === 'other-rule' ? 'OBSERVED' : 'MODELED',
+        finality: 'SIMULATED',
+        ruleVersion: scenario === 'other-rule' ? 'observed-fixture-v1' : 'paper-maker-zero-fee-v1',
+      });
+      // Represent an older persisted contradiction without changing any live data.
+      if (invalid) {
+        postAccountingEvent(db.sqlite, { ...posting, ruleVersion: 'legacy-fixture-v1' });
+        db.sqlite.prepare('UPDATE accounting_events SET rule_version = ? WHERE event_key = ?')
+          .run(posting.ruleVersion, posting.eventKey);
+      } else {
+        expect(postAccountingEvent(db.sqlite, posting)).toBe(true);
+      }
+      db.sqlite.prepare("INSERT INTO latest_features (token_id, ts, mid) VALUES ('t', ?, 0.5)")
+        .run(base);
+      const report = getAccountingReport(db.sqlite, 'wallet:7', base, base);
+      expect(report.events).toContainEqual(expect.objectContaining(posting));
+      if (invalid) {
+        expect(report.issues).toContainEqual({
+          code: 'INVALID_MAKER_FEE_RULE', eventKey: posting.eventKey, tokenId: 't',
+        });
+        expect(report.complete).toBe(false);
+        expect(report.netPnl).toBeNull();
+        db.sqlite.prepare('DELETE FROM accounting_events WHERE event_key = ?').run(posting.eventKey);
+        expect(() => postAccountingEvent(db.sqlite, posting)).toThrow('INVALID_MAKER_FEE_RULE');
+        expect(db.sqlite.prepare("SELECT COUNT(*) AS n FROM accounting_events WHERE kind='FILL'")
+          .get()).toEqual({ n: 0 });
+      } else {
+        expect(report.issues).toEqual([]);
+        expect(report.complete).toBe(true);
+        expect(report.cash).toBe(9.5 - fee);
+        expect(report.positions[0]?.shares).toBe(1);
+        expect(report.netPnl).toBeCloseTo(-fee);
+      }
+    },
+  );
+
   it('persists paper fill economics once and agrees with an independent cash ledger', async () => {
     const db = await createTempDb();
     opened.push(db);

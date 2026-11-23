@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 
-export const ACCOUNTING_VERSION = 'shadow-accounting-v1';
+export const ACCOUNTING_VERSION = 'shadow-accounting-v2';
 export const MAX_MARK_AGE_MS = 60_000;
 export type AccountingKind = 'OPENING' | 'TRANSFER' | 'FILL' | 'SETTLEMENT' | 'CORRECTION';
 export type AccountingFinality = 'SIMULATED' | 'CONFIRMED' | 'PROVISIONAL' | 'FAILED';
@@ -89,6 +89,10 @@ const finite = (value: number | null | undefined): value is number =>
   value != null && Number.isFinite(value);
 const digest = (value: unknown): string =>
   createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const invalidMakerFeeRule = (event: AccountingEvent): boolean =>
+  event.kind === 'FILL' &&
+  event.ruleVersion === 'paper-maker-zero-fee-v1' &&
+  (event.feeAmount !== 0 || event.feeAsset !== 'USDC' || event.feeEvidence !== 'MODELED');
 
 /** Duplicate keys are idempotent only when every economic field agrees. */
 export function postAccountingEvent(sqlite: Database.Database, input: AccountingEvent): boolean {
@@ -128,6 +132,7 @@ export function postAccountingEvent(sqlite: Database.Database, input: Accounting
   ) {
     throw new Error('INVALID_ACCOUNTING_EVENT');
   }
+  if (invalidMakerFeeRule(input)) throw new Error('INVALID_MAKER_FEE_RULE');
   if (input.kind === 'FILL' && input.feeEvidence !== 'MISSING') {
     if (
       !finite(input.feeAmount) ||
@@ -273,6 +278,16 @@ export function getAccountingReport(
         continue;
       }
       if (event.kind === 'CORRECTION') continue;
+      // Older persisted rows may predate posting validation. Keep their trace,
+      // but never certify economics that contradict their declared paper rule.
+      if (invalidMakerFeeRule(event)) {
+        issues.push({
+          code: 'INVALID_MAKER_FEE_RULE',
+          eventKey: event.eventKey,
+          tokenId: event.tokenId ?? undefined,
+        });
+        continue;
+      }
       if (
         event.feeEvidence === 'MISSING' ||
         (event.kind === 'FILL' && (!finite(event.feeAmount) || !event.feeAsset))
