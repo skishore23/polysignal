@@ -2,7 +2,7 @@
 import https, { type RequestOptions } from 'node:https';
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync, writeSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import WebSocket, { type ClientOptions, type RawData } from 'ws';
@@ -52,6 +52,59 @@ const sha = (raw: Buffer) => createHash('sha256').update(raw).digest('hex');
 const decode = (raw: Buffer) => new TextDecoder('utf-8', { fatal: true }).decode(raw);
 const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 
+/** Read-only terminal replay. A receipt hash is an integrity check, not venue authentication. */
+export function verifyStartupCaptureJournal(outputDir: string, ledger: Record<string, any>) {
+  const check = (ok: unknown, reason: string) => { if (!ok) throw Error(`capture:journal_${reason}`); };
+  const controls = ledger.controls;
+  check(Array.isArray(controls) && Number.isSafeInteger(ledger.messages) && ledger.messages === controls.length,
+    'message_count');
+  check(Number.isSafeInteger(ledger.bodyBytes) && ledger.bodyBytes >= 0 && Array.isArray(ledger.reads)
+    && ledger.reads.length <= 4 && ledger.readsClaimed === ledger.reads.length, 'read_accounting');
+  const names = new Set<string>();
+  const httpBytes = ledger.reads.reduce((sum: number, row: any) => {
+    check(['metadata', 'market', 'book', 'fee'].includes(row.name) && !names.has(row.name)
+      && Number.isSafeInteger(row.bodyBytes) && row.bodyBytes >= 0 && row.bodyBytes <= 2_097_152, 'read_receipt');
+    names.add(row.name);
+    const file = path.join(outputDir, `${row.name}.bin`);
+    const stat = lstatSync(file); check(stat.isFile() && !stat.isSymbolicLink(), 'read_file_identity');
+    const body = readFileSync(file);
+    check(body.length === row.bodyBytes && sha(body) === row.sha256, 'read_bytes_or_hash');
+    return sum + row.bodyBytes;
+  }, 0);
+  const journal = ledger.controlJournal;
+  if (!journal) {
+    check(ledger.messages === 0 && !ledger.streamStartedAt &&
+      !existsSync(path.join(outputDir, 'controls.ndjson')) && ledger.bodyBytes === httpBytes, 'not_started');
+    return { records: 0, bodyBytes: httpBytes, sha256: null, notStarted: true };
+  }
+  check(journal.file === 'controls.ndjson' && journal.closed === true &&
+    Number.isSafeInteger(journal.records) && journal.records >= 0 && journal.records <= 20_000 &&
+    Number.isSafeInteger(journal.bytes) && journal.bytes >= 0 && /^[a-f0-9]{64}$/.test(journal.sha256), 'not_closed');
+  const journalPath = path.join(outputDir, journal.file);
+  check(lstatSync(journalPath).isFile() && !lstatSync(journalPath).isSymbolicLink(), 'file_identity');
+  const raw = readFileSync(journalPath);
+  check(raw.length === journal.bytes && sha(raw) === journal.sha256, 'bytes_or_hash');
+  const text = decode(raw);
+  check(text === '' || text.endsWith('\n'), 'truncated');
+  const records = text === '' ? [] : text.slice(0, -1).split('\n').map(line => JSON.parse(line));
+  check(records.length === journal.records && records.length === controls.length, 'record_count');
+  let wsBytes = 0;
+  for (const [index, record] of records.entries()) {
+    check(JSON.stringify(record) === JSON.stringify(controls[index]) && record.number === index + 1, 'order_or_receipt');
+    check(Number.isSafeInteger(record.bytes) && Number.isSafeInteger(record.retainedBytes) &&
+      record.retainedBytes >= 0 && record.retainedBytes <= 2_097_152 && record.bytes >= record.retainedBytes &&
+      record.complete === (record.bytes === record.retainedBytes), 'length_or_completeness');
+    const file = path.join(outputDir, `frame-${index + 1}.bin`);
+    const stat = lstatSync(file); check(stat.isFile() && !stat.isSymbolicLink(), 'raw_file_identity');
+    const body = readFileSync(file);
+    check(body.length === record.retainedBytes && sha(body) === record.sha256, 'raw_bytes_or_hash');
+    wsBytes += record.bytes;
+  }
+  check(readdirSync(outputDir).filter(name => /^frame-[0-9]+\.bin$/.test(name)).length === records.length, 'extra_raw_file');
+  check(ledger.bodyBytes === httpBytes + wsBytes, 'body_accounting');
+  return { records: records.length, bodyBytes: httpBytes + wsBytes, sha256: journal.sha256, notStarted: false };
+}
+
 export class StartupSourceCapture {
   private readonly policy: Readonly<StartupCapturePolicy>;
   private readonly clock: () => CaptureClock;
@@ -70,6 +123,8 @@ export class StartupSourceCapture {
   private frontier = { sequence: 0, open: false };
   private readonly attempted = new Set<string>();
   private readonly completed = new Set<string>();
+  private controlJournalFd: number | undefined;
+  private readonly controlJournalHash = createHash('sha256');
   private state: Record<string, any>;
 
   constructor(policy: StartupCapturePolicy, clock: () => CaptureClock, outputDir: string,
@@ -81,7 +136,7 @@ export class StartupSourceCapture {
     if (!Number.isSafeInteger(this.origin.utc) || this.origin.utc < 0 || !Number.isFinite(this.origin.mono) || this.origin.mono < 0 ||
       (policy.metadataUrl !== STARTUP_METADATA_URL && this.metadataSlotStartUtcMs === null) || policy.maxReads !== 4 ||
       policy.perReadBodyBytes !== 2_097_152 || policy.maxBodyBytes !== 8_388_608 ||
-      !Number.isSafeInteger(policy.maxMessages) || policy.maxMessages < 1 || policy.maxMessages > 1000 ||
+      !Number.isSafeInteger(policy.maxMessages) || policy.maxMessages < 1 || policy.maxMessages > 20_000 ||
       !Number.isSafeInteger(policy.maxWallMs) || policy.maxWallMs < 1 || policy.maxWallMs > 300_000 ||
       !Number.isSafeInteger(policy.expiresUtcMs) || policy.expiresUtcMs <= this.origin.utc ||
       policy.expiresUtcMs - this.origin.utc > policy.maxWallMs ||
@@ -125,15 +180,45 @@ export class StartupSourceCapture {
       sourceWindowExtended: false };
     this.persist();
   }
-  private persist() { writeFileSync(path.join(this.outputDir, 'ledger.json'), JSON.stringify(this.state, null, 2) + '\n'); }
+  private persist() {
+    // Live checkpoints are fixed-size summaries. All per-frame receipts are already
+    // appended; do not repeatedly serialize the growing controls array.
+    const { controls, ...summary } = this.state;
+    const value = this.state.status === 'STREAMING' ? { ...summary, controlsCount: controls.length,
+      controlsLocation: 'controls.ndjson' } : this.state;
+    writeFileSync(path.join(this.outputDir, 'ledger.json'), JSON.stringify(value, null, 2) + '\n');
+  }
+  private appendControl(control: Record<string, unknown>) {
+    if (this.controlJournalFd === undefined) throw Error('control_journal_not_open');
+    const raw = Buffer.from(JSON.stringify(control) + '\n');
+    let offset = 0;
+    while (offset < raw.length) {
+      const written = writeSync(this.controlJournalFd, raw, offset, raw.length - offset);
+      if (written <= 0) throw Error('control_journal_short_write');
+      this.controlJournalHash.update(raw.subarray(offset, offset + written));
+      offset += written; this.state.controlJournal.bytes += written;
+    }
+    this.state.controlJournal.records++;
+    this.state.controlJournal.sha256 = this.controlJournalHash.copy().digest('hex');
+    // Recovery checkpoints grow logarithmically in count; their own payload has no
+    // per-frame array. The append-only journal remains complete between checkpoints.
+    const n = this.state.controlJournal.records;
+    if ((n & (n - 1)) === 0) this.persist();
+  }
+  private closeControlJournal() {
+    if (this.controlJournalFd === undefined) return;
+    const fd = this.controlJournalFd; this.controlJournalFd = undefined;
+    closeSync(fd);
+    this.state.controlJournal.closed = true;
+  }
   private fail(reason: string): Error {
     this.failed = true;
     this.frontier.open = false;
     this.state.status = 'FAILED';
     this.state.failures.push(reason);
-    this.persist();
-    this.activeAbort?.();
-    this.activeStreamAbort?.(reason);
+    if (this.activeStreamAbort) { this.activeStreamAbort(reason); return Error(`capture:${reason}`); }
+    try { this.persist(); }
+    finally { this.activeAbort?.(); }
     return Error(`capture:${reason}`);
   }
   private at(): CaptureClock {
@@ -270,7 +355,15 @@ export class StartupSourceCapture {
     this.available(); const startedAt = this.at();
     if (!this.market || this.activeRead || this.completed.size !== 4) throw this.fail('four_reads_required_before_stream');
     this.streamed = true;
-    this.state.status = 'STREAMING'; this.state.streamStartedAt = startedAt; this.persist();
+    try {
+      this.controlJournalFd = openSync(path.join(this.outputDir, 'controls.ndjson'), 'wx', 0o600);
+      this.state.controlJournal = { file: 'controls.ndjson', records: 0, bytes: 0,
+        sha256: this.controlJournalHash.copy().digest('hex'), closed: false,
+        frontierScope: 'delivered_application_events_only_not_OS_or_wire' };
+      this.state.status = 'STREAMING'; this.state.streamStartedAt = startedAt; this.persist();
+    } catch (e) {
+      try { this.closeControlJournal(); } finally { throw this.fail(String(e)); }
+    }
     return new Promise((resolve, reject) => {
       let socket: WebSocket | undefined;
       let finished = false;
@@ -292,7 +385,16 @@ export class StartupSourceCapture {
         this.state.status = error ? 'FAILED' : 'STOPPED';
         this.state.termination = { reason, at, callbacksPending: pending > 0 };
         if (error) { this.failed = true; this.state.failures.push(reason); }
-        this.persist();
+        try { this.closeControlJournal(); }
+        catch (e) { error = true; this.failed = true; this.state.status = 'FAILED'; this.state.journalCloseError = String(e); }
+        try { this.state.journalVerification = verifyStartupCaptureJournal(this.outputDir, this.state); }
+        catch (e) {
+          error = true; this.failed = true; this.state.status = 'FAILED';
+          this.state.journalVerificationError = String(e); this.state.failures.push(String(e));
+          reason = `journal_verification:${String(e)}`; this.state.termination.reason = reason;
+        }
+        try { this.persist(); }
+        catch (e) { error = true; this.failed = true; this.state.terminalPersistenceError = String(e); }
         if (error) reject(Error(`capture:${reason}`)); else resolve(copy(this.state.termination));
       };
       this.activeStreamAbort = (reason) => stop(reason, true);
@@ -322,8 +424,9 @@ export class StartupSourceCapture {
         // observed bodyBytes still records all bytes actually delivered to this handler.
         const retained = raw.subarray(0, this.policy.perReadBodyBytes);
         writeFileSync(path.join(this.outputDir, `frame-${n}.bin`), retained, { flag: 'wx', mode: 0o600 });
-        this.state.controls.push({ number: n, kind, at, bytes: raw.length, retainedBytes: retained.length,
-          sha256: sha(retained), complete: retained.length === raw.length }); this.persist();
+        const control = { number: n, kind, at, bytes: raw.length, retainedBytes: retained.length,
+          sha256: sha(retained), complete: retained.length === raw.length };
+        this.state.controls.push(control); this.appendControl(control);
         if (raw.length > this.policy.perReadBodyBytes || this.state.bodyBytes >= this.policy.maxBodyBytes) throw Error('stream_application_limit');
         const capture = { url: SOCKET_URL,
           raw: kind === 'protocol_ping' || kind === 'protocol_pong' ? '' : decode(raw),
@@ -333,7 +436,7 @@ export class StartupSourceCapture {
       const budgetAfter = () => {
         if (this.state.messages < this.policy.maxMessages) return;
         // Stop accepting immediately, then finish already accepted callbacks within
-        // the original deadline. No 1001st delivered message enters the journal.
+        // the original deadline. No message beyond the selected cap enters the journal.
         accepting = false;
         this.frontier.open = false;
         socket?.terminate();
@@ -343,6 +446,7 @@ export class StartupSourceCapture {
         if (callbacks.shouldStop()) { stop('caller_stop'); return; }
         socket = this.transports.socket(SOCKET_URL, {
           perMessageDeflate: false, maxPayload: this.policy.perReadBodyBytes,
+          allowSynchronousEvents: false,
           followRedirects: false, handshakeTimeout: Math.min(10_000, this.policy.expiresUtcMs - startedAt.utc),
           agent: false, autoPong: false, maxHeaderSize: 16_384,
         });

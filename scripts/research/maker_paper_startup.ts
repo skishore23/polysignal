@@ -15,12 +15,14 @@ export const sha = (raw: string | Buffer) => createHash("sha256").update(raw).di
 const json = (value: unknown) => JSON.stringify(value, null, 2) + "\n";
 function check(ok: unknown, reason: string): asserts ok { if (!ok) throw Error("paper_startup:" + reason); }
 export const RUN_PROTOCOL = {
-  schema: "CODEX_PAPER_STARTUP_PROTOCOL_V4", evidence: "PUBLIC_DEVELOPMENT_INPUTS_ONLY",
+  schema: "CODEX_PAPER_STARTUP_PROTOCOL_V5", evidence: "PUBLIC_DEVELOPMENT_INPUTS_ONLY",
   metadataRecipe: "CURRENT_FIVE_MINUTE_SLOT_BY_DOCUMENTED_SLUG",
   metadataUrlTemplate: "https://gamma-api.polymarket.com/markets/slug/btc-updown-5m-{slotStartSeconds}",
   versions: ["v1", "v2"], maxReads: 4,
-  perReadBodyBytes: 2097152, maxBodyBytes: 8388608, maxMessages: 1000, maxWallMs: 300000,
+  perReadBodyBytes: 2097152, maxBodyBytes: 8388608, maxMessages: 20000, maxWallMs: 300000,
   byteScope: "application response/message bodies; framing and TLS/network bytes unknown",
+  sourceReceipt: "delivered application event; OS/TLS/parser buffer arrival unknown",
+  receiptJournal: "ordered append-only JSONL; geometric summary checkpoints; terminal exact replay verification",
   account: { cashUSDC: "10", shares: "0", pending: "0", paperProfile: "OWNER_6_USDC", perOrderUSDC: "6", totalLossUSDC: "6", exposureUSDC: "6", quoteSizing: "original configured target, rounded downward only" },
   fills: false, liveOrders: false, reconnect: false, retries: false, redirects: false,
   outcome: "original first outcome; preserve label and choose IDs by explicit protocol version",
@@ -105,12 +107,12 @@ export function selectCurrentBtcMarket(capture: Pick<RawCapture, "raw" | "at" | 
     selected: candidates[0] ?? null, raw_body_sha256: sha(capture.raw), quote_phase_admitted: false, rejected };
 }
 
-type Admission = { schema: "CODEX_PAPER_STARTUP_ADMISSION_V4"; executionAdmitted: true;
+type Admission = { schema: "CODEX_PAPER_STARTUP_ADMISSION_V5"; executionAdmitted: true;
   inputMode: "CURRENT_PUBLIC_CAPTURE" | "OFFLINE_FIXTURE"; runName: string; notBeforeUtcMs: number; expiresUtcMs: number;
   marketStartUtcMs?: number; metadataUrl?: string;
   protocolSha256: string; inputSha256: Record<string, string>; reviewFile: string; reviewSha256: string };
 export function validateAdmission(a: Admission, now: StartupClock, offlineInjection = false) {
-  check(a.schema === "CODEX_PAPER_STARTUP_ADMISSION_V4" && a.executionAdmitted === true, "independent_admission_required");
+  check(a.schema === "CODEX_PAPER_STARTUP_ADMISSION_V5" && a.executionAdmitted === true, "independent_admission_required");
   check(["CURRENT_PUBLIC_CAPTURE", "OFFLINE_FIXTURE"].includes(a.inputMode)
     && (!offlineInjection || a.inputMode === "OFFLINE_FIXTURE"), "test_transport_in_live_evidence");
   check(/^maker-startup-[a-zA-Z0-9_-]{1,80}$/.test(a.runName), "run_identity");
@@ -182,7 +184,7 @@ export async function runPaperStartup(admissionFile: string, test?: {
     return { ...now(), sourceSequence: f.sequence, sourceAvailable: f.open }; };
   writeFileSync(path.join(out, "frozen-admission.json"), rawAdmission, { flag: "wx" });
   writeFileSync(path.join(out, "frozen-protocol.json"), json(RUN_PROTOCOL), { flag: "wx" });
-  const result: any = { schema: "CODEX_PAPER_STARTUP_RESULT_V4", inputMode: admission.inputMode,
+  const result: any = { schema: "CODEX_PAPER_STARTUP_RESULT_V5", inputMode: admission.inputMode,
     status: "STARTING", actualQuotes: 0, fills: 0, profitUSDC: null, actualAccountChargeUSD: null,
     admissionSha256: sha(rawAdmission), traces: [], startedAt: now() };
   const stream: BridgeStreamItem[] = [], seenTrades = new Set<string>();
@@ -210,13 +212,13 @@ export async function runPaperStartup(admissionFile: string, test?: {
       result.constraint = { venueMinimumNotionalUSDC: initial.book.minimum, perOrderUSDC: RUN_PROTOCOL.account.perOrderUSDC, totalLossUSDC: RUN_PROTOCOL.account.totalLossUSDC };
       return result;
     }
-    await capture.stream({ shouldStop: () => stop,
+    const termination = await capture.stream({ shouldStop: () => stop,
       onMessage: async frame => { stream.push({ kind: "frame", raw: frame.raw, at: frame.at }); },
       onSample: async at => {
         stream.push({ kind: "sample", at });
         if (at.utc >= s.end_utc_ms) { result.status = "MARKET_ENDED_WITHOUT_QUOTE"; stop = true; return; }
         const d = derived(at);
-        const trace: any = { at, missing: d.missing, featureTs: d.feature?.ts ?? null };
+        const trace: any = { at, missing: d.missing, bookInvalidation: d.bookInvalidation, featureTs: d.feature?.ts ?? null };
         result.traces.push(trace);
         if (d.missing.length || at.mono - lastTick < 10000) return;
         const captureSha256 = sha(json({ gamma, selection, clobMarket, clobBook, tokenFee, stream }));
@@ -248,9 +250,16 @@ export async function runPaperStartup(admissionFile: string, test?: {
           stop = true;
         }
       } });
-    if (result.status === "STARTING") result.status = "PAPER_WINDOW_ENDED_WITHOUT_RISK_VALID_QUOTE";
+    result.captureTermination = termination;
+    if (result.status === "STARTING") result.status = termination.reason === "message_limit"
+      ? "SOURCE_MESSAGE_BUDGET_EXHAUSTED_BEFORE_QUOTE" : "PAPER_WINDOW_ENDED_WITHOUT_RISK_VALID_QUOTE";
     return result;
-  } catch (e) { result.status = "FAILED_CLOSED"; result.failure = String(e); return result; }
+  } catch (e) {
+    result.failure = String(e);
+    result.status = result.failure.includes("stream_application_limit")
+      ? "SOURCE_APPLICATION_BODY_BUDGET_EXHAUSTED_BEFORE_QUOTE" : "FAILED_CLOSED";
+    return result;
+  }
   finally {
     // TypeScript cannot track assignments performed in the awaited stream callbacks.
     const finalSink = sink as ReturnType<typeof installStartupSink> | null;
@@ -265,6 +274,10 @@ export async function runPaperStartup(admissionFile: string, test?: {
     } catch (e) { result.status = "FAILED_TERMINAL_RECONCILIATION"; result.cleanupFailure = String(e); }
     finally {
       result.sourceLedger = capture.ledger(); result.finishedAt = now(); result.engineLogs = log;
+      result.readiness = { canonicalSampleAttempts: result.traces.length,
+        engineTicks: result.traces.filter((t: any) => t.completedAt).length,
+        accountCreated: finalDb !== null, nextBlockingInputs: result.traces.at(-1)?.missing ?? null };
+      result.captureTermination ??= result.sourceLedger.termination ?? null;
       result.sourceAccountingScope = admission.inputMode === "OFFLINE_FIXTURE" ? "AUTHORED_OFFLINE_TRANSPORT_ONLY" : "ACTUAL_CAPTURE_ATTEMPTS";
       result.physicalSourceRequests = admission.inputMode === "OFFLINE_FIXTURE" ? 0 : null;
       result.resources = { processCpuMicroseconds: process.cpuUsage(cpuStart), wallMilliseconds: performance.now() - wallStart,

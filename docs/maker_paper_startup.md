@@ -59,7 +59,7 @@ calculation. Already running callbacks are joined before terminal cancellation
 and database closure.
 
 Each HTTPS read is bounded by 10 seconds and rejects at 2 MiB of application
-body; the shared application-body budget is 8 MiB, with at most 1000 WebSocket
+body; the shared application-body budget is 8 MiB, with at most 20000 WebSocket
 messages. A delivered WebSocket frame that crosses the remaining budget is
 retained and rejected before bridge admission. This does not claim a
 pre-delivery network-ingress cap. HTTP framing, TLS/wire bytes, invoices and full
@@ -93,3 +93,13 @@ References: [market identity and trading constraints](https://docs.polymarket.co
 [order precision and minimums](https://docs.polymarket.com/trading/place-orders),
 [compact market parameters](https://docs.polymarket.com/api-reference/markets/get-clob-market-info),
 [token fee rate](https://docs.polymarket.com/api-reference/market-data/get-fee-rate).
+
+V4 retained all 1000 frozen messages and ended before feature readiness; its raw
+result remains unchanged. The prospectively reviewed V5 ceiling is 20000 messages,
+with the same shared 8 MiB body and original 300-second/slot deadline. It may hit
+the byte limit earlier and does not guarantee enough history or a quote. Busy-feed
+scheduling yields between delivered WebSocket events, and an append-only receipt
+journal removes cumulative ledger rewrites from the per-frame path. Receipt and
+frontier mean delivery to the application; OS/socket/wire arrival remains unknown.
+Exact validated price-level replacement/deletion requires an original WebSocket
+book anchor; an HTTP snapshot alone cannot bridge the subscription gap.

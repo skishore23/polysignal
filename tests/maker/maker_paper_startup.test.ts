@@ -63,7 +63,7 @@ function setup(minimum = 0.1, failure = false, offset = 0, lateSample?: number) 
   const hashes = inputHashes(), protocolSha256 = sha(text(RUN_PROTOCOL));
   const reviewFile = path.join(out, "authored-offline-review.json");
   writeFileSync(reviewFile, text({ decision: "APPROVE_BOUNDED_PAPER_STARTUP_RUN", runName, inputMode: "OFFLINE_FIXTURE", protocolSha256, inputSha256: hashes }));
-  const admission: any = { schema: "CODEX_PAPER_STARTUP_ADMISSION_V4", executionAdmitted: true,
+  const admission: any = { schema: "CODEX_PAPER_STARTUP_ADMISSION_V5", executionAdmitted: true,
     inputMode: "OFFLINE_FIXTURE", runName, notBeforeUtcMs: start + offset, expiresUtcMs: start + offset + 300000,
     protocolSha256, inputSha256: hashes, reviewFile, reviewSha256: sha(readFileSync(reviewFile)) };
   const file = path.join(out, "authored-admission.json"); writeFileSync(file, text(admission));
@@ -128,6 +128,24 @@ describe("complete no-fill startup wiring", () => {
     expect(result.status).toBe("SKIP_VENUE_NOTIONAL_MINIMUM_EXCEEDS_PAPER_CAP");
     expect(result.actualQuotes).toBe(0); expect(result.fills).toBe(0); expect(result.profitUSDC).toBeNull();
     expect(result.constraint).toEqual({ venueMinimumNotionalUSDC: "7", perOrderUSDC: "6", totalLossUSDC: "6" });
+  });
+  it("classifies message exhaustion without calling it a full window or strategy verdict", async () => {
+    const f = setup();
+    (f.capture as any).stream = async () => ({ reason: "message_limit", at: f.clock(), callbacksPending: false });
+    const r = await runPaperStartup(f.file, { clock: f.clock, capture: f.capture });
+    expect(r.status).toBe("SOURCE_MESSAGE_BUDGET_EXHAUSTED_BEFORE_QUOTE");
+    expect(r.readiness).toEqual({ canonicalSampleAttempts: 0, engineTicks: 0, accountCreated: false, nextBlockingInputs: null });
+    expect(r.captureTermination.reason).toBe("message_limit");
+    expect(r.actualQuotes).toBe(0); expect(r.terminal).toBeUndefined();
+  });
+  it("reports body-budget exhaustion separately and retains its exact failure", async () => {
+    const f = setup();
+    (f.capture as any).stream = async () => { throw Error("stream_application_limit"); };
+    const r = await runPaperStartup(f.file, { clock: f.clock, capture: f.capture });
+    expect(r.status).toBe("SOURCE_APPLICATION_BODY_BUDGET_EXHAUSTED_BEFORE_QUOTE");
+    expect(r.failure).toContain("stream_application_limit");
+    expect(r.readiness.accountCreated).toBe(false); expect(r.actualQuotes).toBe(0);
+    expect(r.profitUSDC).toBeNull();
   });
   it("retains source failure and never calls it a started maker", async () => {
     const f = setup(0.1, true); const result = await runPaperStartup(f.file, { clock: f.clock, capture: f.capture });

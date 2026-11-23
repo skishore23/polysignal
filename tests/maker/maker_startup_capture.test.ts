@@ -2,13 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { Readable } from 'node:stream';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { closeSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import type { RequestOptions } from 'node:https';
-import type WebSocket from 'ws';
-import { STARTUP_METADATA_URL, currentSlotMetadataUrl, StartupSourceCapture,
+import WebSocket, { WebSocketServer } from 'ws';
+import { performance } from 'node:perf_hooks';
+import { STARTUP_METADATA_URL, currentSlotMetadataUrl, StartupSourceCapture, verifyStartupCaptureJournal,
   type StartupCapturePolicy, type CaptureMarket, type CaptureSocketOptions } from '../../scripts/research/maker_startup_capture';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -395,4 +396,152 @@ describe('finite startup capture: offline injected transports only', () => {
     await expect(h.capture.stream({ onMessage() {}, onSample() {}, shouldStop: () => true }))
       .resolves.toMatchObject({ reason: 'caller_stop', callbacksPending: false }); expect(h.sockets).toHaveLength(0);
   });
+
+  it('accepts a prospective ceiling of 20000 while rejecting larger or noninteger caps', () => {
+    expect(harness({ maxMessages: 20_000 }).capture.ledger().policy.maxMessages).toBe(20_000);
+    for (const maxMessages of [20_001, 0, 1.5, Infinity])
+      expect(() => harness({ maxMessages })).toThrow('invalid_policy_or_clock');
+  });
+
+  it('terminates at exactly the selected 20000-message cap without journaling an extra frame', async () => {
+    const h = harness({ maxMessages: 20_000 }); await ready(h); let count = 0;
+    const pending = h.capture.stream({ onMessage(c) { expect(Number(c.raw)).toBe(count++); },
+      onSample() {}, shouldStop: () => false });
+    const socket = h.sockets[0]!.socket; socket.emit('open');
+    for (let n = 0; n < 20_001; n++) socket.message(String(n));
+    await expect(pending).resolves.toMatchObject({ reason: 'message_limit', callbacksPending: false });
+    await h.capture.settleCallbacks();
+    const ledger = h.capture.ledger(); expect(count).toBe(20_000); expect(ledger.messages).toBe(20_000);
+    expect(ledger.controlJournal).toMatchObject({ records: 20_000, closed: true });
+    expect(ledger.journalVerification.records).toBe(20_000);
+    expect(existsSync(path.join(h.outputDir, 'frame-20001.bin'))).toBe(false);
+    expect(h.capture.observationFrontier()).toEqual({ sequence: 20_000, open: false });
+  }, 15_000);
+
+  it('journals a busy burst once per frame, with bounded live checkpoints and exact terminal replay', async () => {
+    const h = harness({ maxMessages: 20_000 }); await ready(h);
+    let release!: () => void; const observed: string[] = [];
+    const pending = h.capture.stream({ onMessage: async (c) => {
+      observed.push(c.raw); if (c.raw === '0') await new Promise<void>((r) => { release = r; });
+    }, onSample() {}, shouldStop: () => false });
+    const check = expect(pending).rejects.toThrow('websocket_disconnect');
+    const socket = h.sockets[0]!.socket; socket.emit('open');
+    for (let n = 0; n < 1025; n++) socket.message(String(n));
+    const checkpoint = JSON.parse(readFileSync(path.join(h.outputDir, 'ledger.json'), 'utf8'));
+    expect(checkpoint.controls).toBeUndefined(); expect(checkpoint.controlsCount).toBe(1024);
+    expect(checkpoint.controlJournal.records).toBe(1024);
+    expect(readFileSync(path.join(h.outputDir, 'controls.ndjson'), 'utf8').trim().split('\n')).toHaveLength(1025);
+    expect(h.capture.observationFrontier()).toEqual({ sequence: 1025, open: true });
+    await flush(); socket.emit('close'); await check; release(); await h.capture.settleCallbacks();
+    const ledger = JSON.parse(readFileSync(path.join(h.outputDir, 'ledger.json'), 'utf8'));
+    expect(ledger.controls).toHaveLength(1025); expect(ledger.controlJournal).toMatchObject({ records: 1025, closed: true });
+    expect(ledger.journalVerification).toMatchObject({ records: 1025 });
+    const rawJournal = readFileSync(path.join(h.outputDir, 'controls.ndjson'));
+    expect(ledger.controlJournal.bytes).toBe(rawJournal.length);
+    expect(ledger.controlJournal.sha256).toBe(createHash('sha256').update(rawJournal).digest('hex'));
+    expect(rawJournal.toString().trim().split('\n').map(line => JSON.parse(line))).toEqual(ledger.controls);
+    expect(verifyStartupCaptureJournal(h.outputDir, ledger)).toMatchObject({ records: 1025, bodyBytes: ledger.bodyBytes });
+    expect(observed).toEqual(['0']); expect(h.calls).toHaveLength(4); expect(h.sockets).toHaveLength(1);
+  });
+
+  it.each(['truncated', 'corrupt', 'missing_record', 'reordered', 'missing_raw', 'changed_raw'])
+  ('fails terminal journal replay closed for %s', async (mutation) => {
+    const h = harness({ maxMessages: 2 }); await ready(h);
+    const pending = h.capture.stream({ onMessage() {}, onSample() {}, shouldStop: () => false });
+    const socket = h.sockets[0]!.socket; socket.emit('open'); socket.message('one'); socket.message('two'); await pending;
+    const ledger = h.capture.ledger(); const file = path.join(h.outputDir, 'controls.ndjson');
+    const lines = readFileSync(file, 'utf8').trim().split('\n');
+    if (mutation === 'truncated') writeFileSync(file, readFileSync(file).subarray(0, -1));
+    if (mutation === 'corrupt') writeFileSync(file, readFileSync(file, 'utf8').replace('message', 'changed'));
+    if (mutation === 'missing_record') writeFileSync(file, lines[0] + '\n');
+    if (mutation === 'reordered') writeFileSync(file, lines.reverse().join('\n') + '\n');
+    if (mutation === 'missing_raw') rmSync(path.join(h.outputDir, 'frame-1.bin'));
+    if (mutation === 'changed_raw') writeFileSync(path.join(h.outputDir, 'frame-1.bin'), 'bad');
+    expect(() => verifyStartupCaptureJournal(h.outputDir, ledger)).toThrow();
+  });
+
+  it('treats an HTTP failure with no WebSocket attempt as a legitimate absent journal', async () => {
+    const h = harness({}, [{ status: 503 }]); await expect(h.capture.readMetadata()).rejects.toThrow();
+    expect(verifyStartupCaptureJournal(h.outputDir, h.capture.ledger())).toMatchObject({ records: 0, notStarted: true });
+    expect(existsSync(path.join(h.outputDir, 'controls.ndjson'))).toBe(false);
+  });
+
+  it('rejects a raw receipt collision before bridge delivery and retains the terminal failure ledger', async () => {
+    const h = harness(); await ready(h); const onMessage = vi.fn();
+    const pending = h.capture.stream({ onMessage, onSample() {}, shouldStop: () => false });
+    const check = expect(pending).rejects.toThrow(); const socket = h.sockets[0]!.socket; socket.emit('open');
+    writeFileSync(path.join(h.outputDir, 'frame-1.bin'), 'preexisting'); socket.message('{}'); await check;
+    expect(onMessage).not.toHaveBeenCalled(); expect(h.capture.observationFrontier().open).toBe(false);
+    const ledger = JSON.parse(readFileSync(path.join(h.outputDir, 'ledger.json'), 'utf8'));
+    expect(ledger.status).toBe('FAILED'); expect(ledger.controlJournal.closed).toBe(true);
+    expect(ledger.journalVerificationError).toBeDefined(); expect(ledger.failures.length).toBeGreaterThan(0);
+  });
+
+  it('rejects a failed journal write before the observation reaches the bridge', async () => {
+    const h = harness(); await ready(h); const onMessage = vi.fn();
+    const pending = h.capture.stream({ onMessage, onSample() {}, shouldStop: () => false });
+    const check = expect(pending).rejects.toThrow(); const socket = h.sockets[0]!.socket; socket.emit('open');
+    // Deliberately invalidate only this fixture's descriptor to inject EBADF at
+    // append. No production file or global filesystem function is modified.
+    closeSync((h.capture as unknown as { controlJournalFd: number }).controlJournalFd);
+    socket.message('{}'); await check; await h.capture.settleCallbacks();
+    expect(onMessage).not.toHaveBeenCalled(); expect(h.capture.observationFrontier().open).toBe(false);
+    expect(readFileSync(path.join(h.outputDir, 'frame-1.bin'), 'utf8')).toBe('{}');
+    expect(h.capture.ledger()).toMatchObject({ status: 'FAILED', controlJournal: { records: 0, closed: false } });
+    expect(h.capture.ledger().journalCloseError).toContain('EBADF');
+  });
+
+  it('detects corruption during a still-open journal before successful terminal proof', async () => {
+    const h = harness(); await ready(h); let stop = false;
+    const pending = h.capture.stream({ onMessage() {}, onSample() {}, shouldStop: () => stop });
+    const check = expect(pending).rejects.toThrow('journal_verification');
+    const socket = h.sockets[0]!.socket; socket.emit('open'); socket.message('one'); await flush();
+    writeFileSync(path.join(h.outputDir, 'controls.ndjson'), 'tampered'); stop = true;
+    await vi.advanceTimersByTimeAsync(1000); await check;
+    expect(h.capture.ledger()).toMatchObject({ status: 'FAILED', controlJournal: { closed: true } });
+  });
+
+  it('makes sample progress amid a real busy loopback ws feed and retains every delivered frame', async () => {
+    // Only the socket factory is redirected to an explicitly permitted local test
+    // server. All four HTTPS requests remain the same injected, network-free fake.
+    const h = harness(); vi.useRealTimers();
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    await new Promise<void>((resolve, reject) => { server.once('listening', resolve); server.once('error', reject); });
+    const address = server.address(); if (typeof address === 'string' || !address) throw Error('loopback_address');
+    const N = 8000; let sent = 0; const seen: string[] = []; const samples: number[] = [];
+    server.on('connection', ws => ws.once('message', () => {
+      // One unthrottled high-rate burst, not a timer paced producer.
+      for (let n = 0; n < N; n++) { ws.send(JSON.stringify({ n, payload: 'x'.repeat(200) })); sent++; }
+    }));
+    const initialUtc = Date.now();
+    const capture = new StartupSourceCapture(policy({ maxMessages: 20_000, expiresUtcMs: initialUtc + 6000, maxWallMs: 6000 }),
+      () => ({ utc: Date.now(), mono: performance.now() }), path.join(path.dirname(h.outputDir), 'loopback-capture'), {
+        request: h.request,
+        socket: (_url, options) => {
+          expect(options.allowSynchronousEvents).toBe(false);
+          return new WebSocket(`ws://127.0.0.1:${address.port}`, options as unknown as import('ws').ClientOptions);
+        },
+      });
+    try {
+      await capture.readMetadata(); capture.bindMarket(MARKET);
+      await capture.readMarket(); await capture.readBook(); await capture.readFee();
+      const result = await capture.stream({ onMessage(c) {
+        seen.push(c.raw);
+        // Bounded local computation models ordinary per-frame feature work. It
+        // keeps the burst active past the 1s sample boundary without delaying I/O.
+        const until = performance.now() + .2; while (performance.now() < until) { /* local work */ }
+      }, onSample() { samples.push(seen.length); }, shouldStop: () => samples.length > 0 });
+      await capture.settleCallbacks();
+      expect(result.reason).toBe('caller_stop'); expect(sent).toBe(N);
+      expect(samples[0]).toBeGreaterThan(0); expect(samples[0]).toBeLessThan(N);
+      const ledger = capture.ledger(); expect(ledger.messages).toBe(seen.length);
+      expect(capture.observationFrontier()).toEqual({ sequence: seen.length, open: false });
+      expect(verifyStartupCaptureJournal(path.join(path.dirname(h.outputDir), 'loopback-capture'), ledger).records).toBe(seen.length);
+      for (let n = 0; n < seen.length; n++) expect(JSON.parse(seen[n]!).n).toBe(n);
+      expect(h.calls).toHaveLength(4);
+    } finally {
+      for (const ws of server.clients) ws.terminate();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  }, 10_000);
 });

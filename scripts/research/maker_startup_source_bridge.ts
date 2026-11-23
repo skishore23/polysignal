@@ -200,6 +200,7 @@ export function deriveMakerStartupInputs(input: MakerStartupSourceInput) {
   function snapshot(row: Record<string, unknown>, at: StartupClock, raw: string) {
     check(row.asset_id === token && row.market === condition, "book_identity");
     if (row.version !== undefined) check(v2 && row.version === "v2", "unsupported_book_version");
+    if (row.tick_size !== undefined) check(decimal(row.tick_size, true).units === tick.units, "snapshot_tick_context");
     const venueUtc = venueTime(row.timestamp, at.utc);
     const levels = (values: unknown) => {
       check(Array.isArray(values) && values.length > 0, "empty_book_side");
@@ -218,7 +219,8 @@ export function deriveMakerStartupInputs(input: MakerStartupSourceInput) {
     check(book.bids[0]!.price < book.asks[0]!.price, "crossed_book");
     return { token, bid: String(book.bids[0]!.price), ask: String(book.asks[0]!.price), tick: tick.text,
       minimum: minimum.text, minimumUnit: "USDC_NOTIONAL" as const, minimumShares: minimumShares.text,
-      marketMinimum: marketMinimum.text, lot: "0.01", lotSource, receipt: at, venueUtc, rawSha256: digest(raw), venueHash: hash };
+      marketMinimum: marketMinimum.text, lot: "0.01", lotSource, receipt: at, venueUtc,
+      rawSha256: digest(raw), anchorSha256: digest(raw), venueHash: hash as string | null };
   }
   let book = snapshot(rest, input.clobBook.at, input.clobBook.raw);
   let previous = input.clobBook.at;
@@ -237,8 +239,54 @@ export function deriveMakerStartupInputs(input: MakerStartupSourceInput) {
   let feature: ReturnType<FeatureEngine["compute"]> | null = null;
   let lastSample: StartupClock | null = null;
   let sampledBook: typeof book | null = null;
-  let valid = true;
-  const fresh = (at: StartupClock) => valid && at.utc - book.receipt.utc <= 1000 && at.mono - book.receipt.mono <= 1000
+  let streamAnchored = false;
+  let bookInvalidation: string | null = null;
+  let lastSelectedVenueUtc = book.venueUtc;
+
+  function applyPriceChange(e: Record<string, unknown>, at: StartupClock, raw: string) {
+    if (!Array.isArray(e.price_changes) || !e.price_changes.length) {
+      bookInvalidation = "MISSING_PRICE_CHANGE_MEMBERS";
+      return;
+    }
+    const venueUtc = venueTime(e.timestamp, at.utc);
+    const members = e.price_changes.map(value => {
+      const c = object(value);
+      check(identity.outcomes.some(o => o.token === c.asset_id), "delta_asset");
+      check(c.side === "BUY" || c.side === "SELL", "delta_side");
+      const p = decimal(c.price, true), q = decimal(c.size, true);
+      const bestBid = decimal(c.best_bid, true), bestAsk = decimal(c.best_ask, true);
+      check(p.units > 0n && p.units < scale && bestBid.units <= scale && bestAsk.units <= scale, "delta_price_domain");
+      string(c.hash); // Per-change hash is opaque. It is never substituted for a full book hash.
+      if (c.asset_id === token) check(p.units % tick.units === 0n && bestBid.units % tick.units === 0n
+        && bestAsk.units % tick.units === 0n, "delta_price_grid");
+      return { selected: c.asset_id === token, side: c.side === "BUY" ? "bids" as const : "asks" as const,
+        price: p.n, size: q.n, bestBid: bestBid.n, bestAsk: bestAsk.n };
+    });
+    const selected = members.filter(c => c.selected);
+    if (!selected.length) return;
+    if (e.tick_size !== undefined) check(decimal(e.tick_size, true).units === tick.units, "delta_tick_context");
+    check(venueUtc >= lastSelectedVenueUtc, "backdated_delta");
+    lastSelectedVenueUtc = venueUtc;
+    if (!streamAnchored) { bookInvalidation = "WS_SNAPSHOT_REQUIRED_BEFORE_DELTA"; return; }
+    if (bookInvalidation !== null) return; // Only a complete later snapshot repairs a broken chain.
+    const keys = selected.map(c => c.side + ":" + c.price);
+    if (new Set(keys).size !== keys.length) { bookInvalidation = "AMBIGUOUS_REPEATED_DELTA_LEVEL"; return; }
+
+    // Each price/side receives its new aggregate size; zero removes the level. Do not
+    // expose a partially applied message or infer selected depth from sibling prices.
+    for (const c of selected) {
+      store.applyDelta({tokenId: token, side: c.side, price: c.price, size: c.size, ts: venueUtc, recvTsMs: at.utc});
+    }
+    const { bestBid, bestAsk } = store.bestBidAsk(token);
+    if (!bestBid || !bestAsk || bestBid.price >= bestAsk.price
+      || selected.some(c => c.bestBid !== bestBid.price || c.bestAsk !== bestAsk.price)) {
+      bookInvalidation = "DELTA_BEST_BOOK_MISMATCH";
+      return;
+    }
+    book = { ...book, bid: String(bestBid.price), ask: String(bestAsk.price), receipt: at,
+      venueUtc, rawSha256: digest(raw), venueHash: null };
+  }
+  const fresh = (at: StartupClock) => bookInvalidation === null && at.utc - book.receipt.utc <= 1000 && at.mono - book.receipt.mono <= 1000
     && book.receipt.utc - book.venueUtc <= 1000 && at.utc - book.venueUtc <= 1000;
   for (const item of input.stream) {
     ordered(previous, item.at);
@@ -261,11 +309,10 @@ export function deriveMakerStartupInputs(input: MakerStartupSourceInput) {
       check(e.market === condition, "frame_market");
       if (e.event_type === "book") {
         const next = snapshot(e, item.at, item.raw);
-        check(next.venueUtc >= book.venueUtc, "backdated_book");
-        book = next; valid = true;
+        check(next.venueUtc >= lastSelectedVenueUtc, "backdated_book");
+        book = next; streamAnchored = true; bookInvalidation = null; lastSelectedVenueUtc = next.venueUtc;
       } else if (e.event_type === "price_change") {
-        // An unverified delta can never advance a book or refresh its age.
-        valid = false;
+        applyPriceChange(e, item.at, item.raw);
       } else if (e.event_type === "last_trade_price") {
         check(e.asset_id === token && (e.side === "BUY" || e.side === "SELL"), "trade_identity_or_side");
         const venueUtc = venueTime(e.timestamp, item.at.utc);
@@ -306,7 +353,7 @@ export function deriveMakerStartupInputs(input: MakerStartupSourceInput) {
   if (orderAgeSeconds !== null && orderAgeSeconds > 0) missing.push("POSITIVE_MINIMUM_ORDER_AGE_APPLICABILITY");
   if (!fee) missing.push("POST_ONLY_MAKER_FEE_BOUND");
   if (identity.volume === null || identity.liquidity === null) missing.push("OBSERVED_MARKET_VOLUME_AND_LIQUIDITY");
-  return { identity, book, feature, trades, fee, feeRateBps, makerBaseFee, takerBaseFee, clobFeeCurve, orderAgeSeconds, missing,
+  return { identity, book, bookInvalidation, feature, trades, fee, feeRateBps, makerBaseFee, takerBaseFee, clobFeeCurve, orderAgeSeconds, missing,
     sourceHashes: { gamma: digest(input.gamma.raw), clobMarket: digest(input.clobMarket.raw),
       clobBook: digest(input.clobBook.raw), tokenFee: input.tokenFee ? digest(input.tokenFee.raw) : null } };
 }

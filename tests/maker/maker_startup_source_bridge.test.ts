@@ -123,6 +123,69 @@ describe("original-token maker source bridge", () => {
     const r = deriveMakerStartupInputs({...f,stream:[...f.stream,delta,newer,{kind:"sample",at:at(1012)}],decision:at(1012)});
     expect(r.missing).not.toContain("CURRENT_CANONICAL_FEATURE_SAMPLE"); expect(r.book.bid).toBe("0.49");
   });
+  // Original WS paired structure with authored identifiers, prices, amounts and clocks.
+  const anchor = (ms: number) => frame(ms,{event_type:"book",...snapshot(ms),tick_size:"0.01"});
+  const member = (overrides: Record<string,unknown> = {}) => ({asset_id:token,price:"0.47",size:"7",side:"BUY",
+    best_bid:"0.47",best_ask:"0.54",hash:"opaque-change",...overrides});
+  const sibling = member({asset_id:"999",side:"SELL",price:"0.53",size:"800",best_bid:"0.46",best_ask:"0.53"});
+  const change = (ms:number, ...changes:Record<string,unknown>[]) => frame(ms,{
+    market:condition,event_type:"price_change",timestamp:String(start+ms),price_changes:changes});
+  function deltas(stream: BridgeStreamItem[], decisionMs: number) {
+    return deriveMakerStartupInputs({...fixture(),stream,decision:at(decisionMs)});
+  }
+  it("replaces selected level size absolutely and filters the complementary pair before feature sampling", () => {
+    const snapshotFrame=anchor(15), delta=change(20,sibling,member());
+    const r=deltas([snapshotFrame,delta,{kind:"sample",at:at(20)}],20);
+    expect(r.bookInvalidation).toBeNull();
+    expect(r.feature).toMatchObject({bidDepthTop:7,askDepthTop:12,bestBid:.47,bestAsk:.54});
+    expect(r.book).toMatchObject({receipt:at(20),venueUtc:start+20,venueHash:null,tick:"0.01",minimum:"5",minimumShares:"5"});
+    expect(r.book.rawSha256).toBe(hash((delta as {raw:string}).raw));
+    expect(r.book.anchorSha256).toBe(hash((snapshotFrame as {raw:string}).raw));
+    expect(r.feature?.vol30m).toBeNull(); expect(r.trades).toEqual([]);
+  });
+  it("deletes depleted levels, inserts new levels and certifies the entire message's final best prices", () => {
+    const removed=member({size:"0",best_bid:"0.43"});
+    const r=deltas([anchor(15),change(20,removed,sibling),{kind:"sample",at:at(20)}],20);
+    expect(r.feature).toMatchObject({bestBid:.43,bidDepthTop:25});
+    const newAsk=member({side:"SELL",price:"0.52",size:"18",best_bid:"0.43",best_ask:"0.52"});
+    const updated=deltas([anchor(15),change(20,{...removed,best_ask:"0.52"},sibling,newAsk),{kind:"sample",at:at(20)}],20);
+    expect(updated.feature).toMatchObject({bestBid:.43,bestAsk:.52,bidDepthTop:25,askDepthTop:18});
+  });
+  it("requires a full WS anchor for deltas and leaves sibling-only receipt age unchanged", () => {
+    expect(deltas([change(20,member())],20).bookInvalidation).toBe("WS_SNAPSHOT_REQUIRED_BEFORE_DELTA");
+    const r=deltas([anchor(15),change(1200,sibling),{kind:"sample",at:at(1200)}],1200);
+    expect(r.book.receipt).toEqual(at(15)); expect(r.feature).toBeNull();
+    expect(r.missing).toContain("FRESH_AUTHORITATIVE_ORIGINAL_BOOK");
+  });
+  it("rejects inconsistent or ambiguous deltas until a full non-backdated snapshot reanchors depth", () => {
+    const bad=change(20,member({price:"0.48",best_bid:"0.47"}));
+    const r=deltas([anchor(15),bad,change(21,member()),{kind:"sample",at:at(21)}],21);
+    expect(r.bookInvalidation).toBe("DELTA_BEST_BOOK_MISMATCH"); expect(r.feature).toBeNull();
+    expect(r.book.receipt).toEqual(at(15));
+    const fixed=deltas([anchor(15),bad,anchor(23),{kind:"sample",at:at(23)}],23);
+    expect(fixed.bookInvalidation).toBeNull(); expect(fixed.feature?.bidDepthTop).toBe(10);
+    const dup=deltas([anchor(15),change(20,member(),member({size:"6"}))],20);
+    expect(dup.bookInvalidation).toBe("AMBIGUOUS_REPEATED_DELTA_LEVEL");
+  });
+  it("refuses unknown assets, malformed sizes, different tick context and backwards venue times", () => {
+    for(const [payload,reason] of [
+      [member({asset_id:"654"}),"delta_asset"],[member({side:"BID"}),"delta_side"],
+      [member({price:"0.471"}),"delta_price_grid"],[member({size:"-2"}),"decimal_format"],
+      [member({best_ask:null}),"decimal_type"],
+    ] as const) expect(()=>deltas([anchor(15),change(20,member(),payload)],20)).toThrow(reason);
+    const old=frame(21,{market:condition,event_type:"price_change",timestamp:String(start+14),price_changes:[member()]});
+    expect(()=>deltas([anchor(15),old],21)).toThrow("backdated_delta");
+    const changedTick=frame(20,{event_type:"book",...snapshot(20),tick_size:"0.001"});
+    expect(()=>deltas([anchor(15),changedTick],20)).toThrow("snapshot_tick_context");
+    const changeContext=frame(20,{market:condition,event_type:"price_change",timestamp:String(start+20),tick_size:"0.001",price_changes:[member()]});
+    expect(()=>deltas([anchor(15),changeContext],20)).toThrow("delta_tick_context");
+  });
+  it("never refreshes venue age with a late but well-formed delta", () => {
+    const late=frame(1500,{market:condition,event_type:"price_change",timestamp:String(start+20),price_changes:[member()]});
+    const r=deltas([anchor(15),late,{kind:"sample",at:at(1500)}],1500);
+    expect(r.bookInvalidation).toBeNull(); expect(r.book.venueUtc).toBe(start+20);
+    expect(r.feature).toBeNull(); expect(r.missing).toContain("FRESH_AUTHORITATIVE_ORIGINAL_BOOK");
+  });
   it("uses original V2 position labels, compact CLOB parameters and two dimensioned minimums", () => {
     const r = deriveMakerStartupInputs(v2fixture());
     expect(r.identity).toMatchObject({protocolVersion:"v2", token, label:"Up",minimumNotional:"6",
