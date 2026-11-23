@@ -69,8 +69,8 @@ const parseChanges = (raw: unknown): ClobWsPriceChange[] => {
     if (Array.isArray(item) && item.length >= 3) {
       const price = Number(item[0]);
       const size = Number(item[1]);
-      const side = String(item[2]) === "SELL" ? "SELL" : "BUY";
-      if (Number.isFinite(price) && Number.isFinite(size)) {
+      const side = item[2] === "SELL" ? "SELL" : item[2] === "BUY" ? "BUY" : null;
+      if (Number.isFinite(price) && Number.isFinite(size) && side != null) {
         changes.push({ price, size, side });
       }
       continue;
@@ -78,9 +78,10 @@ const parseChanges = (raw: unknown): ClobWsPriceChange[] => {
     if (typeof item === "object" && item !== null) {
       const price = Number((item as { price?: unknown }).price);
       const size = Number((item as { size?: unknown }).size);
-      const side = String((item as { side?: unknown }).side) === "SELL" ? "SELL" : "BUY";
+      const rawSide = (item as { side?: unknown }).side;
+      const side = rawSide === "SELL" ? "SELL" : rawSide === "BUY" ? "BUY" : null;
       const hash = (item as { hash?: string | null }).hash ?? null;
-      if (Number.isFinite(price) && Number.isFinite(size)) {
+      if (Number.isFinite(price) && Number.isFinite(size) && side != null) {
         changes.push({ price, size, side, hash });
       }
     }
@@ -96,6 +97,8 @@ export class ClobWsClient {
   private readonly handlers: ClobWsHandlers;
   private readonly wsFactory: (url: string) => WebSocket;
   private reconnectDelayMs = 1000;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(args: ClobWsClientArgs) {
     this.url = args.url;
@@ -117,12 +120,20 @@ export class ClobWsClient {
         assets_ids: this.assetIds
       };
       this.ws?.send(JSON.stringify(payload));
+      this.clearHeartbeat();
+      const socket = this.ws;
+      this.heartbeatTimer = setInterval(() => {
+        if (!this.closed && socket === this.ws && socket?.readyState === WebSocket.OPEN) {
+          socket.send("PING");
+        }
+      }, 10_000);
       log?.info({ assetCount: this.assetIds.length }, "CLOB WS subscribed");
       this.handlers.onConnect?.();
     });
 
     this.ws.on("message", (data) => {
       const recvTsMs = Date.now();
+      if (String(data) === "PONG") return;
       let msg: any;
       try {
         msg = JSON.parse(String(data));
@@ -133,6 +144,29 @@ export class ClobWsClient {
 
       const eventType = msg.event_type ?? msg.type ?? msg.msg_type;
       const tokenId = msg.asset_id ?? msg.token_id ?? msg.assetId ?? null;
+
+      // Current market frames carry asset_id on each change, not on the envelope.
+      // Keep the original per-token handler contract and legacy top-level frames.
+      if (eventType === "price_change" || eventType === "price_change_v2") {
+        const rawChanges = msg.price_changes ?? msg.changes ?? [];
+        if (!Array.isArray(rawChanges)) return;
+        const byToken = new Map<string, ClobWsPriceChange[]>();
+        for (const raw of rawChanges) {
+          const id = raw != null && typeof raw === "object" && !Array.isArray(raw)
+            ? raw.asset_id ?? raw.token_id ?? raw.assetId ?? tokenId
+            : tokenId;
+          if (typeof id !== "string" || !id) continue;
+          const changes = parseChanges([raw]);
+          if (!changes.length) continue;
+          const group = byToken.get(id) ?? [];
+          group.push(...changes);
+          byToken.set(id, group);
+        }
+        for (const [id, changes] of byToken) {
+          this.handlers.onPriceChange(id, changes, recvTsMs);
+        }
+        return;
+      }
       if (!tokenId || typeof tokenId !== "string") return;
 
       if (eventType === "book") {
@@ -150,13 +184,6 @@ export class ClobWsClient {
         return;
       }
 
-      if (eventType === "price_change" || eventType === "price_change_v2") {
-        const changes = parseChanges(msg.price_changes ?? msg.changes ?? []);
-        if (!changes.length) return;
-        this.handlers.onPriceChange(tokenId, changes, recvTsMs);
-        return;
-      }
-
       if (eventType === "last_trade_price") {
         const price = Number(msg.price);
         const size = Number(msg.size);
@@ -167,12 +194,21 @@ export class ClobWsClient {
             : typeof msg.ts === "number"
               ? msg.ts
               : null;
-        const timestamp =
+        const numericTimestamp =
           tsRaw == null
             ? null
             : tsRaw < 1_000_000_000_000
               ? tsRaw * 1000
               : tsRaw;
+        // Raw market API timestamps are decimal millisecond strings. Preserve
+        // absent/unsupported times as unknown; retain numeric-seconds compatibility.
+        const stringTimestamp = typeof msg.timestamp === "string" && /^\d+$/.test(msg.timestamp)
+          ? Number(msg.timestamp)
+          : null;
+        const parsedTimestamp = stringTimestamp ?? numericTimestamp;
+        const timestamp = parsedTimestamp != null && Number.isSafeInteger(parsedTimestamp) && parsedTimestamp >= 0
+          ? parsedTimestamp
+          : null;
         if (!Number.isFinite(price) || !Number.isFinite(size) || side == null) return;
         this.handlers.onTrade?.({
           tokenId,
@@ -187,6 +223,7 @@ export class ClobWsClient {
     });
 
     this.ws.on("close", () => {
+      this.clearHeartbeat();
       if (this.closed) return;
       this.handlers.onDisconnect?.();
       this.scheduleReconnect();
@@ -199,8 +236,16 @@ export class ClobWsClient {
 
   close(): void {
     this.closed = true;
+    this.clearHeartbeat();
+    if (this.reconnectTimer != null) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
     this.ws?.close();
     this.ws = null;
+  }
+
+  private clearHeartbeat(): void {
+    if (this.heartbeatTimer != null) clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = null;
   }
 
   private scheduleReconnect(): void {
@@ -208,6 +253,10 @@ export class ClobWsClient {
     const delay = this.reconnectDelayMs;
     this.reconnectDelayMs = Math.min(30_000, this.reconnectDelayMs * 2);
     log?.warn({ delayMs: delay }, "CLOB WS reconnect scheduled");
-    setTimeout(() => this.connect(), delay);
+    if (this.reconnectTimer != null) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, delay);
   }
 }
