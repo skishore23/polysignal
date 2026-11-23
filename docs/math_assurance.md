@@ -57,6 +57,8 @@ The regression suite was first run against the reviewed code; all eight immediat
 
 Unposted-fill detection uses the same event and receipt cutoffs as the event fold. A later posting cannot hide a retained fill gap or change a report frozen before that posting became eligible. This does not supply missing receipt timestamps for historical shadow rows or authenticate their historical availability.
 
+A matching event key only discharges a retained fill gap when it identifies a `FILL` posting for the same account with `SIMULATED` or `CONFIRMED` finality. A failed posting, a different account's posting or a non-fill event cannot establish that the retained fill has been accounted for. This check does not authenticate venue execution or reconstruct missing opening inventory.
+
 ## Not yet certified
 
 - Historical fee effective dates, venue rounding ties and fee payment assets are not verified by the current documentation alone. Prior reports must be treated as old-model scenarios until re-run with pinned historical rules; no old evidence is deleted.

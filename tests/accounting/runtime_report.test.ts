@@ -433,6 +433,39 @@ describe('runtime accounting event to report', () => {
     },
   );
 
+  it.each(['other-account', 'non-fill', 'failed'] as const)(
+    'keeps a retained fill gap when the matching event key belongs to a %s posting',
+    async (mismatch) => {
+      const db = await createTempDb();
+      opened.push(db);
+      postAccountingEvent(db.sqlite, event({
+        eventKey: 'opening', kind: 'OPENING', sourceRef: 'opening', cashDelta: 10,
+      }));
+      const orderId = Number(db.sqlite.prepare(`INSERT INTO shadow_orders
+        (ts, wallet_id, token_id, side, kind, execution_mode)
+        VALUES (?, 7, 't', 'BUY', 'MAKER_BID', 'SHADOW')`).run(base).lastInsertRowid);
+      const fillId = Number(db.sqlite.prepare(`INSERT INTO shadow_fills
+        (ts, order_id, price, size, method) VALUES (?, ?, 0.5, 1, 'trade_match')`)
+        .run(base, orderId).lastInsertRowid);
+      postAccountingEvent(db.sqlite, event({
+        eventKey: `shadow-fill:${fillId}`, sourceRef: String(fillId),
+        ...(mismatch === 'non-fill'
+          ? { kind: 'TRANSFER' as const, cashDelta: 0 }
+          : { kind: 'FILL' as const, orderId, tokenId: 't', side: 'BUY' as const,
+              grossShares: 1, netSharesDelta: 1, price: 0.5, cashDelta: -0.5,
+              feeAsset: 'USDC' as const, feeAmount: 0, feeEvidence: 'MODELED' as const }),
+        accountKey: mismatch === 'other-account' ? 'wallet:8' : 'wallet:7',
+        finality: mismatch === 'failed' ? 'FAILED' : 'SIMULATED',
+      }));
+      const report = getAccountingReport(db.sqlite, 'wallet:7', base, base);
+      expect(report.issues).toContainEqual({ code: 'UNPOSTED_SHADOW_FILL', fillId, tokenId: 't' });
+      expect(report.complete).toBe(false);
+      expect(report.netPnl).toBeNull();
+      expect(report.cash).toBe(10);
+      expect(report.positions).toEqual([]);
+    },
+  );
+
   it('rolls back a fill when its accounting posting fails', async () => {
     const db = await createTempDb();
     opened.push(db);

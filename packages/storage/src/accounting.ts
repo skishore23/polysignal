@@ -361,17 +361,21 @@ export function getAccountingReport(
           valuationTs - row.ts <= MAX_MARK_AGE_MS;
         return { tokenId, ...position, mark: valid ? mark : null, markTs: row?.ts ?? null };
       });
-    // A posting outside this report's scope cannot discharge a retained fill gap.
+    // Only a successful fill posting in this account and scope can discharge a gap.
     const legacy = sqlite
       .prepare(
         `SELECT f.id AS fillId, o.token_id AS tokenId FROM shadow_fills f
       JOIN shadow_orders o ON o.id = f.order_id LEFT JOIN accounting_events e
         ON e.event_key = 'shadow-fill:' || f.id
+        AND e.account_key = ? AND e.kind = 'FILL'
+        AND e.finality IN ('SIMULATED', 'CONFIRMED')
         AND e.event_ts <= ? AND e.receipt_ts <= ?
       WHERE o.execution_mode = 'SHADOW' AND ('wallet:' || COALESCE(o.wallet_id, 'unattributed')) = ?
         AND f.ts <= ? AND e.id IS NULL ORDER BY f.id`,
       )
-      .all(valuationTs, asOfReceiptTs ?? Number.MAX_SAFE_INTEGER, accountKey, valuationTs) as Array<{
+      .all(
+        accountKey, valuationTs, asOfReceiptTs ?? Number.MAX_SAFE_INTEGER, accountKey, valuationTs,
+      ) as Array<{
         fillId: number;
         tokenId: string;
       }>;
