@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { BookStore } from "../../packages/book/src/index";
 import { deriveMakerStartupInputs, type MakerStartupSourceInput, type BridgeStreamItem } from "../../scripts/research/maker_startup_source_bridge";
 
 const start = 1795404000000, condition = "0x" + "a".repeat(64), market = "45", token = "888";
@@ -166,6 +167,38 @@ describe("original-token maker source bridge", () => {
     expect(fixed.bookInvalidation).toBeNull(); expect(fixed.feature?.bidDepthTop).toBe(10);
     const dup=deltas([anchor(15),change(20,member(),member({size:"6"}))],20);
     expect(dup.bookInvalidation).toBe("AMBIGUOUS_REPEATED_DELTA_LEVEL");
+  });
+  it("discards an older full snapshot before it can replace depth or refresh the quote clock", () => {
+    const applied = vi.spyOn(BookStore.prototype, "upsertSnapshot");
+    const changed = vi.spyOn(BookStore.prototype, "applyDelta");
+    try {
+      const left = {...snapshot(18), event_type:"book", bids:[{price:"0.47",size:"370"},{price:"0.43",size:"1"}]};
+      const events = [anchor(15), change(25,member({size:"9"})), frame(27,left),
+        change(40,member({size:"701"})), frame(45,{...snapshot(34),event_type:"book"})];
+      const r = deltas([...events,{kind:"sample",at:at(46)}],46);
+      expect(r.bookInvalidation).toBe("BACKDATED_FULL_SNAPSHOT");
+      expect(r.book).toMatchObject({bid:"0.47",ask:"0.54",receipt:at(25),venueUtc:start+25});
+      expect(r.feature).toBeNull(); expect(r.missing).toContain("FRESH_AUTHORITATIVE_ORIGINAL_BOOK");
+      expect(applied).toHaveBeenCalledTimes(2); // Original REST and full WS anchor only.
+      expect(changed).toHaveBeenCalledTimes(1);
+      const restored = deltas([...events,frame(47,{...snapshot(40),event_type:"book"}),{kind:"sample",at:at(47)}],47);
+      expect(restored.bookInvalidation).toBeNull();
+      expect(restored.book).toMatchObject({receipt:at(47),venueUtc:start+40});
+      expect(restored.feature).toMatchObject({bidDepthTop:10,askDepthTop:12});
+    } finally { applied.mockRestore(); changed.mockRestore(); }
+  });
+  it("rejects malformed or crossed full snapshots before they can repair an invalid stream", () => {
+    const events = [anchor(20),frame(22,{...snapshot(19),event_type:"book"})];
+    for (const [patch, reason] of [
+      [{asks:[]}, "empty_book_side"], [{asset_id:"999"}, "book_identity"],
+      [{bids:[{price:"0.55",size:"370"}]}, "crossed_book"]
+    ] as const) {
+      const applied = vi.spyOn(BookStore.prototype, "upsertSnapshot");
+      try {
+        expect(()=>deltas([...events,frame(26,{...snapshot(26),event_type:"book",...patch})],26)).toThrow(reason);
+        expect(applied).toHaveBeenCalledTimes(2);
+      } finally { applied.mockRestore(); }
+    }
   });
   it("refuses unknown assets, malformed sizes, different tick context and backwards venue times", () => {
     for(const [payload,reason] of [

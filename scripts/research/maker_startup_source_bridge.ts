@@ -197,7 +197,7 @@ export function deriveMakerStartupInputs(input: MakerStartupSourceInput) {
     check(p.units > 0n && p.units < scale && p.units % tick.units === 0n, "price_grid");
     return p;
   };
-  function snapshot(row: Record<string, unknown>, at: StartupClock, raw: string) {
+  function parseSnapshot(row: Record<string, unknown>, at: StartupClock, raw: string) {
     check(row.asset_id === token && row.market === condition, "book_identity");
     if (row.version !== undefined) check(v2 && row.version === "v2", "unsupported_book_version");
     if (row.tick_size !== undefined) check(decimal(row.tick_size, true).units === tick.units, "snapshot_tick_context");
@@ -214,15 +214,18 @@ export function deriveMakerStartupInputs(input: MakerStartupSourceInput) {
     };
     const bids = levels(row.bids), asks = levels(row.asks);
     const hash = string(row.hash);
-    store.upsertSnapshot({ tokenId: token, marketId: market, hash, bids, asks, ts: venueUtc, recvTsMs: at.utc });
-    const book = store.getBook(token)!;
-    check(book.bids[0]!.price < book.asks[0]!.price, "crossed_book");
-    return { token, bid: String(book.bids[0]!.price), ask: String(book.asks[0]!.price), tick: tick.text,
+    const bid = bids.reduce((best, level) => Math.max(best, level.price), 0);
+    const ask = asks.reduce((best, level) => Math.min(best, level.price), 1);
+    check(bid < ask, "crossed_book");
+    const observation = { token, bid: String(bid), ask: String(ask), tick: tick.text,
       minimum: minimum.text, minimumUnit: "USDC_NOTIONAL" as const, minimumShares: minimumShares.text,
       marketMinimum: marketMinimum.text, lot: "0.01", lotSource, receipt: at, venueUtc,
       rawSha256: digest(raw), anchorSha256: digest(raw), venueHash: hash as string | null };
+    return { observation, snapshot: { tokenId: token, marketId: market, hash, bids, asks, ts: venueUtc, recvTsMs: at.utc } };
   }
-  let book = snapshot(rest, input.clobBook.at, input.clobBook.raw);
+  const initial = parseSnapshot(rest, input.clobBook.at, input.clobBook.raw);
+  store.upsertSnapshot(initial.snapshot);
+  let book = initial.observation;
   let previous = input.clobBook.at;
   if (input.tokenFee) { ordered(previous, input.tokenFee.at); previous = input.tokenFee.at; }
   const feeRateBps = input.tokenFee ? feeRate(input.tokenFee, token) : null;
@@ -308,9 +311,14 @@ export function deriveMakerStartupInputs(input: MakerStartupSourceInput) {
       const e = object(message);
       check(e.market === condition, "frame_market");
       if (e.event_type === "book") {
-        const next = snapshot(e, item.at, item.raw);
-        check(next.venueUtc >= lastSelectedVenueUtc, "backdated_book");
-        book = next; streamAnchored = true; bookInvalidation = null; lastSelectedVenueUtc = next.venueUtc;
+        const next = parseSnapshot(e, item.at, item.raw);
+        if (next.observation.venueUtc < lastSelectedVenueUtc) {
+          bookInvalidation = "BACKDATED_FULL_SNAPSHOT";
+          continue;
+        }
+        store.upsertSnapshot(next.snapshot);
+        book = next.observation;
+        streamAnchored = true; bookInvalidation = null; lastSelectedVenueUtc = book.venueUtc;
       } else if (e.event_type === "price_change") {
         applyPriceChange(e, item.at, item.raw);
       } else if (e.event_type === "last_trade_price") {

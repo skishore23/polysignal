@@ -15,7 +15,7 @@ export const sha = (raw: string | Buffer) => createHash("sha256").update(raw).di
 const json = (value: unknown) => JSON.stringify(value, null, 2) + "\n";
 function check(ok: unknown, reason: string): asserts ok { if (!ok) throw Error("paper_startup:" + reason); }
 export const RUN_PROTOCOL = {
-  schema: "CODEX_PAPER_STARTUP_PROTOCOL_V6", evidence: "PUBLIC_DEVELOPMENT_INPUTS_ONLY",
+  schema: "CODEX_PAPER_STARTUP_PROTOCOL_V7", evidence: "PUBLIC_DEVELOPMENT_INPUTS_ONLY",
   metadataRecipe: "CURRENT_FIVE_MINUTE_SLOT_BY_DOCUMENTED_SLUG",
   metadataUrlTemplate: "https://gamma-api.polymarket.com/markets/slug/btc-updown-5m-{slotStartSeconds}",
   versions: ["v1", "v2"], maxReads: 4,
@@ -23,6 +23,7 @@ export const RUN_PROTOCOL = {
   byteScope: "application response/message bodies; framing and TLS/network bytes unknown",
   sourceReceipt: "delivered application event; OS/TLS/parser buffer arrival unknown",
   sampling: "actual monotonic interval >=1000ms; positive remainder rearm; no synthetic/catch-up samples",
+  backdatedFullBook: "never apply or refresh; invalidate until complete selected snapshot >= maximum selected venue watermark",
   receiptJournal: "ordered append-only JSONL; geometric summary checkpoints; terminal exact replay verification",
   account: { cashUSDC: "10", shares: "0", pending: "0", paperProfile: "OWNER_6_USDC", perOrderUSDC: "6", totalLossUSDC: "6", exposureUSDC: "6", quoteSizing: "original configured target, rounded downward only" },
   fills: false, liveOrders: false, reconnect: false, retries: false, redirects: false,
@@ -108,12 +109,12 @@ export function selectCurrentBtcMarket(capture: Pick<RawCapture, "raw" | "at" | 
     selected: candidates[0] ?? null, raw_body_sha256: sha(capture.raw), quote_phase_admitted: false, rejected };
 }
 
-type Admission = { schema: "CODEX_PAPER_STARTUP_ADMISSION_V6"; executionAdmitted: true;
+type Admission = { schema: "CODEX_PAPER_STARTUP_ADMISSION_V7"; executionAdmitted: true;
   inputMode: "CURRENT_PUBLIC_CAPTURE" | "OFFLINE_FIXTURE"; runName: string; notBeforeUtcMs: number; expiresUtcMs: number;
   marketStartUtcMs?: number; metadataUrl?: string;
   protocolSha256: string; inputSha256: Record<string, string>; reviewFile: string; reviewSha256: string };
 export function validateAdmission(a: Admission, now: StartupClock, offlineInjection = false) {
-  check(a.schema === "CODEX_PAPER_STARTUP_ADMISSION_V6" && a.executionAdmitted === true, "independent_admission_required");
+  check(a.schema === "CODEX_PAPER_STARTUP_ADMISSION_V7" && a.executionAdmitted === true, "independent_admission_required");
   check(["CURRENT_PUBLIC_CAPTURE", "OFFLINE_FIXTURE"].includes(a.inputMode)
     && (!offlineInjection || a.inputMode === "OFFLINE_FIXTURE"), "test_transport_in_live_evidence");
   check(/^maker-startup-[a-zA-Z0-9_-]{1,80}$/.test(a.runName), "run_identity");
@@ -185,7 +186,7 @@ export async function runPaperStartup(admissionFile: string, test?: {
     return { ...now(), sourceSequence: f.sequence, sourceAvailable: f.open }; };
   writeFileSync(path.join(out, "frozen-admission.json"), rawAdmission, { flag: "wx" });
   writeFileSync(path.join(out, "frozen-protocol.json"), json(RUN_PROTOCOL), { flag: "wx" });
-  const result: any = { schema: "CODEX_PAPER_STARTUP_RESULT_V6", inputMode: admission.inputMode,
+  const result: any = { schema: "CODEX_PAPER_STARTUP_RESULT_V7", inputMode: admission.inputMode,
     status: "STARTING", actualQuotes: 0, fills: 0, profitUSDC: null, actualAccountChargeUSD: null,
     admissionSha256: sha(rawAdmission), traces: [], startedAt: now() };
   const stream: BridgeStreamItem[] = [], seenTrades = new Set<string>();

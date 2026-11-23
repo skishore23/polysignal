@@ -63,7 +63,7 @@ function setup(minimum = 0.1, failure = false, offset = 0, lateSample?: number) 
   const hashes = inputHashes(), protocolSha256 = sha(text(RUN_PROTOCOL));
   const reviewFile = path.join(out, "authored-offline-review.json");
   writeFileSync(reviewFile, text({ decision: "APPROVE_BOUNDED_PAPER_STARTUP_RUN", runName, inputMode: "OFFLINE_FIXTURE", protocolSha256, inputSha256: hashes }));
-  const admission: any = { schema: "CODEX_PAPER_STARTUP_ADMISSION_V6", executionAdmitted: true,
+  const admission: any = { schema: "CODEX_PAPER_STARTUP_ADMISSION_V7", executionAdmitted: true,
     inputMode: "OFFLINE_FIXTURE", runName, notBeforeUtcMs: start + offset, expiresUtcMs: start + offset + 300000,
     protocolSha256, inputSha256: hashes, reviewFile, reviewSha256: sha(readFileSync(reviewFile)) };
   const file = path.join(out, "authored-admission.json"); writeFileSync(file, text(admission));
