@@ -111,3 +111,11 @@ monotonic spacing before enqueueing a sample, defers an early timer wake by the
 positive rounded-up remainder, and keeps the original deadline. It records each
 sample attempt before deriving features so decoder failures retain their exact
 input clock. It never fabricates timestamps or weakens the bridge cadence gate.
+
+V6 sampled13 times with verified cadence, then rejected a stale full snapshot
+whose venue timestamp was7ms older and whose depth differed. That historical
+run remains failed. V7 prospectively discards such a snapshot before BookStore
+mutation, invalidates the selected chain and preserves the maximum observed
+selected-token venue time. Deltas cannot restore or refresh an invalid chain.
+Only a complete validated full selected snapshot at or above that watermark
+can restore applicability. No chronology, freshness or source budget is relaxed.
