@@ -1,0 +1,19 @@
+{
+  "sourceRepositoryDeclaredByPackage": "https://github.com/skishore23/polysignal",
+  "license": "Apache-2.0",
+  "files": [
+    {
+      "source": "scripts/research/economics.py",
+      "bundled": "scripts/economics.py",
+      "sha256": "b27e7f58432fb6d37f53f54d0825207979fde5122e1284f24940a1c36245ddd3",
+      "modifications": "Unchanged byte-for-byte snapshot; wrapper uses a local 60-digit Decimal context."
+    },
+    {
+      "source": "scripts/research/capture.py",
+      "sha256": "ee08fb21cd5293fdd75526b889e0449e9fa9b3716c6e3efde37d5c2d21361b91",
+      "bundled": "scripts/research.py",
+      "modifications": "Journal verification adapted only; capture networking and writers excluded. Added strict JSON, manifest/root checks and input limits."
+    }
+  ],
+  "sourceState": "Source snapshot includes existing uncommitted research files; no upstream commit claim."
+}

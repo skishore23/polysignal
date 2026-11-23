@@ -1,5 +1,7 @@
 # PolySignal
 
+[Explore the interactive research website](https://skishore23.github.io/polysignal/) · [Download the offline research plugin](https://skishore23.github.io/polysignal/polysignal-research.zip)
+
 PolySignal is an evidence-first Polymarket market-microstructure research system. It ingests public order-book data, computes deterministic features, evaluates fee-aware maker, taker, and structural-arbitrage decisions, simulates execution, and measures subsequent outcomes.
 
 > **Current safety boundary:** the checked-in worker is hard-wired to paper execution. Supplying trading credentials does not enable live order routing.

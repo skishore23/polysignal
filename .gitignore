@@ -28,3 +28,7 @@ reports/
 __pycache__/
 *.pyc
 .tmp-*.log
+
+# Generated plugin packages and public site artifacts
+/dist/
+**/__pycache__/
