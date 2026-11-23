@@ -1,0 +1,10 @@
+{
+  "schema": "ADR_POLY003_PHASE_A_PROTOCOL_V1",
+  "url": "https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=100&order=endDate&ascending=true",
+  "max_attempts": 1,
+  "max_body_bytes": 2097152,
+  "request_deadline_seconds": 10,
+  "shared_wall_seconds": 300,
+  "shared_public_reads": 3,
+  "shared_body_bytes": 8388608
+}
