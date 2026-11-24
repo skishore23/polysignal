@@ -160,7 +160,7 @@ function venueTime(value: unknown, receiveUtc: number) {
 }
 
 export function deriveMakerStartupInputs(input: MakerStartupSourceInput,
-  options: { classifyRestTickMismatch?: boolean } = {}) {
+  options: { classifyRestTickMismatch?: boolean; classifyInitialSnapshotUnavailable?: boolean } = {}) {
   ordered(input.gamma.at, input.clobMarket.at);
   ordered(input.clobMarket.at, input.clobBook.at);
   ordered(input.gamma.at, input.decision);
@@ -183,12 +183,17 @@ export function deriveMakerStartupInputs(input: MakerStartupSourceInput,
     v2 ? x.o === o.label && x.t === o.token : x.outcome === o.label && x.token_id === o.token)), "clob_token_mapping");
   if (v2) check(typeof m.mts === "number" && typeof m.mos === "number", "v2_clob_trading_constraints");
   const tick = decimal(v2 ? m.mts : m.minimum_tick_size);
+  const gammaTick = decimal(identity.minimumTick);
+  const metadataTickMismatch = tick.units !== gammaTick.units;
   const marketMinimum = decimal(v2 ? m.mos : m.minimum_order_size);
   const minimum = decimal(identity.minimumNotional);
   const supportedTick = [100000000n, 10000000n, 1000000n, 100000n].includes(tick.units)
     || (v2 && tick.units === 5000000n);
+  const supportedGammaTick = [100000000n, 10000000n, 1000000n, 100000n].includes(gammaTick.units)
+    || (v2 && gammaTick.units === 5000000n);
+  const classifyUnavailable = options.classifyInitialSnapshotUnavailable === true;
   check(supportedTick && minimum.units > 0n && marketMinimum.units > 0n
-    && tick.units === decimal(identity.minimumTick).units, "tick_or_minimum");
+    && (!metadataTickMismatch || (classifyUnavailable && supportedGammaTick)), "tick_or_minimum");
   const rest = object(read(input.clobBook, clob + "/book?token_id=" + token));
   check(v2 ? rest.version === "v2" : rest.version === undefined, "unsupported_book_version");
   const minimumShares = decimal(rest.min_order_size, true);
@@ -197,13 +202,20 @@ export function deriveMakerStartupInputs(input: MakerStartupSourceInput,
   const supportedRestTick = [100000000n, 10000000n, 1000000n, 100000n].includes(restTick.units)
     || (v2 && restTick.units === 5000000n);
   check(minimumShares.units > 0n && rest.neg_risk === false
-    && (!restTickMismatch || (options.classifyRestTickMismatch === true && supportedRestTick)), "book_market_limits");
+    && (!restTickMismatch || ((options.classifyRestTickMismatch === true || classifyUnavailable) && supportedRestTick)), "book_market_limits");
+  const emptySnapshot = Array.isArray(rest.bids) && Array.isArray(rest.asks)
+    && (rest.bids.length === 0 || rest.asks.length === 0);
+  const jointUnavailable = classifyUnavailable && metadataTickMismatch && emptySnapshot
+    && restTick.units === gammaTick.units;
+  const cleanEmpty = classifyUnavailable && emptySnapshot && !metadataTickMismatch && !restTickMismatch;
+  check(!metadataTickMismatch || jointUnavailable, "tick_or_minimum");
   // A mismatch never supplies accepted quote terms. The operating caller may
   // classify it only after validating the whole REST snapshot on its own grid
   // and the remaining fee schemas. Contradictory minima still fail closed.
-  if (restTickMismatch) {
+  if (restTickMismatch || jointUnavailable) {
     check(minimumShares.units === marketMinimum.units && marketMinimum.units === minimum.units, "book_market_limits");
-    check(Array.isArray(rest.bids) && rest.bids.length > 0 && Array.isArray(rest.asks) && rest.asks.length > 0,
+    check(Array.isArray(rest.bids) && Array.isArray(rest.asks)
+      && (jointUnavailable || (rest.bids.length > 0 && rest.asks.length > 0)),
       "rest_tick_mismatch_snapshot");
     check(input.stream.length === 0, "rest_tick_mismatch_stream");
   }
@@ -227,13 +239,14 @@ export function deriveMakerStartupInputs(input: MakerStartupSourceInput,
     check(p.units > 0n && p.units < scale && p.units % grid.units === 0n, "price_grid");
     return p;
   };
-  function parseSnapshot(row: Record<string, unknown>, at: StartupClock, raw: string, grid = tick) {
+  function parseSnapshot(row: Record<string, unknown>, at: StartupClock, raw: string, grid = tick, allowEmpty = false) {
     check(row.asset_id === token && row.market === condition, "book_identity");
     if (row.version !== undefined) check(v2 && row.version === "v2", "unsupported_book_version");
     if (row.tick_size !== undefined) check(decimal(row.tick_size, true).units === grid.units, "snapshot_tick_context");
     const venueUtc = venueTime(row.timestamp, at.utc);
     const levels = (values: unknown) => {
-      check(Array.isArray(values) && values.length > 0, "empty_book_side");
+      check(Array.isArray(values), allowEmpty ? "book_side_schema" : "empty_book_side");
+      check(values.length > 0 || allowEmpty, "empty_book_side");
       const seen = new Set<bigint>();
       return values.map(v => {
         const level = object(v), p = price(level.price, grid), size = decimal(level.size, true);
@@ -253,7 +266,7 @@ export function deriveMakerStartupInputs(input: MakerStartupSourceInput,
       rawSha256: digest(raw), anchorSha256: digest(raw), venueHash: hash as string | null };
     return { observation, snapshot: { tokenId: token, marketId: market, hash, bids, asks, ts: venueUtc, recvTsMs: at.utc } };
   }
-  const initial = parseSnapshot(rest, input.clobBook.at, input.clobBook.raw, restTick);
+  const initial = parseSnapshot(rest, input.clobBook.at, input.clobBook.raw, restTick, jointUnavailable || cleanEmpty);
   store.upsertSnapshot(initial.snapshot);
   let book = initial.observation;
   let previous = input.clobBook.at;
@@ -266,8 +279,11 @@ export function deriveMakerStartupInputs(input: MakerStartupSourceInput,
   }
   const makerBaseFee = baseFee(v2 ? m.mbf : m.maker_base_fee);
   const takerBaseFee = baseFee(v2 ? m.tbf : m.taker_base_fee);
-  if (restTickMismatch) {
+  if (restTickMismatch || jointUnavailable || cleanEmpty) {
     ordered(previous, input.decision);
+    if (jointUnavailable)
+      throw Error("maker_source:validated_initial_snapshot_unavailable");
+    if (cleanEmpty) throw Error("maker_source:empty_book_side");
     throw Error("maker_source:validated_rest_tick_mismatch");
   }
   const trades: { token: string; market: string; side: "BUY" | "SELL"; price: number; size: number;

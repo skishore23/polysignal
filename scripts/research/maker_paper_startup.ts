@@ -270,14 +270,20 @@ export async function runPaperStartup(admissionFile: string, test?: {
     // TypeScript cannot track assignments performed in the awaited stream callbacks.
     const finalSink = sink as ReturnType<typeof installStartupSink> | null;
     const finalDb = db as Database.Database | null;
+    let cleanupFailure: unknown = null;
     try {
-      await capture.settleCallbacks();
-      if (finalSink) {
-        result.guardRejections = [...finalSink.rejections];
-        result.beforeCancel ??= finalSink.snapshot();
-        result.terminal = finalSink.cancelAll(); result.afterCancel = finalSink.snapshot();
-      }
-    } catch (e) { result.status = "FAILED_TERMINAL_RECONCILIATION"; result.cleanupFailure = String(e); }
+      try { await capture.settleCallbacks(); } catch (e) { cleanupFailure = e; }
+      try { (engine as ReturnType<typeof createIsolatedMaker> | null)?.dispose(); }
+      catch (e) { cleanupFailure ??= e; }
+      try {
+        if (finalSink) {
+          result.guardRejections = [...finalSink.rejections];
+          result.beforeCancel ??= finalSink.snapshot();
+          result.terminal = finalSink.cancelAll(); result.afterCancel = finalSink.snapshot();
+        }
+      } catch (e) { cleanupFailure ??= e; }
+      if (cleanupFailure) { result.status = "FAILED_TERMINAL_RECONCILIATION"; result.cleanupFailure = String(cleanupFailure); }
+    }
     finally {
       result.sourceLedger = capture.ledger(); result.finishedAt = now(); result.engineLogs = log;
       result.readiness = { canonicalSampleAttempts: result.traces.length,

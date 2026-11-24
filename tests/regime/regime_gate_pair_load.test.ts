@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { RegimeGate, type RegimeGateConfig } from "../../apps/worker/src/regime/RegimeGate";
 
@@ -113,6 +113,32 @@ const makeConfig = (fixture: Fixture): RegimeGateConfig => ({
 });
 
 describe("RegimeGate pair snapshot loading", () => {
+  it("disposes its owned reload timer idempotently without changing active decisions", () => {
+    vi.useFakeTimers(); vi.setSystemTime(1_800_000_000_000);
+    const fixture = buildFixture(), logs = { info: vi.fn() } as any;
+    writeSnapshot(fixture, "s1", 3.5);
+    const interval = vi.spyOn(globalThis, "setInterval");
+    const gate = new RegimeGate({ ...makeConfig(fixture), reloadMs: 1000 }, logs);
+    const reload = vi.spyOn(gate as any, "load");
+    try {
+      writeSnapshot(fixture, "s2", 4.5); vi.advanceTimersByTime(61_000);
+      expect(gate.decide("TAKER_BUY", 1, { spread: .005 }).wavgBps).toBe(4.5);
+      const callback = interval.mock.calls[0]![0];
+      (gate as any).dispose(); (gate as any).dispose();
+      const beforeReloads = reload.mock.calls.length, beforeLogs = logs.info.mock.calls.length;
+      if (typeof callback === "function") callback(); // Already queued timer closure.
+      vi.advanceTimersByTime(120_000);
+      expect(reload).toHaveBeenCalledTimes(beforeReloads);
+      expect(logs.info).toHaveBeenCalledTimes(beforeLogs); expect(vi.getTimerCount()).toBe(0);
+      expect(gate.getLoadDiagnostics().manifestStampLoaded).toBe("s2");
+    } finally { (gate as any).dispose?.(); vi.restoreAllMocks(); vi.useRealTimers(); fixture.cleanup(); }
+  });
+  it("disposes a disabled gate without creating any timer", () => {
+    vi.useFakeTimers(); const fixture = buildFixture();
+    const gate = new RegimeGate({ ...makeConfig(fixture), enabled: false, reloadMs: 1000 }, logger);
+    try { (gate as any).dispose(); (gate as any).dispose(); expect(vi.getTimerCount()).toBe(0); }
+    finally { vi.useRealTimers(); fixture.cleanup(); }
+  });
   it("loads coherent manifest/file pair", () => {
     const fixture = buildFixture();
     try {

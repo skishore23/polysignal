@@ -183,3 +183,12 @@ allocations atomically and idempotently; cumulative matches are not settled fill
 Legacy unverified counters and early trades without a local order are quarantined
 or deferred, without invented replay. The mirror is not a complete account/fee
 ledger and this repair does not activate authenticated or live execution.
+
+## V8 bounded source availability and lifecycle
+
+Entry: maker_operating_source_bridge.ts and maker_startup_source_bridge.ts. The
+operating-only joint empty REST side/CLOB-Gamma tick conflict is validated before
+bounded resync; strict startup and quote agreement remain. Preserve debt across
+restart/carry and do not renew the three-attempt slot budget. createIsolatedMaker
+owns RegimeGate disposal; shared MakerLoop.stop does not dispose an injected gate.
+Close capture callbacks, owned timers, reservations and DB with retained failures.

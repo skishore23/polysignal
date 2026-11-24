@@ -17,7 +17,7 @@ export const sha = (x: string | Buffer) => createHash("sha256").update(x).digest
 const json = (x: unknown) => JSON.stringify(x, null, 2) + "\n";
 function check(x: unknown, why: string): asserts x { if (!x) throw Error("maker_operating:" + why); }
 export const OPERATING_PROTOCOL = {
-  schema: "ORDINARY_PAPER_MAKER_OPERATING_V7", venue: "POLYMARKET_ONLY", profile: "OPERATING_BURST_V1",
+  schema: "ORDINARY_PAPER_MAKER_OPERATING_V8", venue: "POLYMARKET_ONLY", profile: "OPERATING_BURST_V1",
   account: PAPER_PROFILES.OPERATING_BURST_V1, sizing: "soft20USDC*positive_regime; exact legal venue floor within hard limits",
   inventoryPreference: "configured K50bps at full200share capacity; changed prospective convention",
   noFills: true, noLiveOrders: true, noPi: true, rewards: false, stopAtFirstQuote: false,
@@ -27,6 +27,7 @@ export const OPERATING_PROTOCOL = {
     activityMetricRepresentation: "raw receipt decimals preserved; finite nonnegative plain-decimal volume/liquidity convert to existing Number/SQLite REAL observations with approximation, exact MAX_SAFE bound and no positive underflow; trading quantity scale9 precision unchanged",
     tickChange: "validated original-token tick event cancels and requires four fresh reads; never change grid in place",
     restTickMismatch: "validated supported REST tick disagreement rejects all terms and requires four fresh reads within existing attempt debt; never adopt the disagreeing grid",
+    initialSnapshotUnavailable: "only the fully validated joint pattern: supported CLOB tick disagrees with Gamma, REST tick equals Gamma, and REST has an empty side; reject all terms, same four-read resync and three-attempt debt then next slot; other mismatches/malformed evidence remain fatal",
     oldDelta: "fully validated singleton old delta cancels and requires four fresh reads/history; never apply or continue the old chain",
     emptyBook: "cancel and fresh resync within existing attempts; malformed side schema remains correctness fault", rawFrameMaxBytes: 2097152,
     segmentBodyBytes: 8388608, segmentMessages: 20000, maxQueuedBytes: 8388608, maxQueuedMessages: 4000,
@@ -66,7 +67,7 @@ export function isUnavailableEmptyBook(error: unknown): boolean {
     || error.message === "operating:Error: maker_source:empty_book_side:";
 }
 /** Exact clean causes only: an archive/schema failure appended by cleanup stays fatal. */
-export function operatingUnavailableReason(error: unknown): "empty_book"|"metadata_not_ready"|"tick_size_change"|"backdated_delta"|"rest_tick_mismatch"|null {
+export function operatingUnavailableReason(error: unknown): "empty_book"|"metadata_not_ready"|"tick_size_change"|"backdated_delta"|"rest_tick_mismatch"|"initial_snapshot_unavailable"|null {
   if (!(error instanceof Error)) return null;
   if(isUnavailableEmptyBook(error))return "empty_book";
   if(error.message === "maker_operating:source_metadata:OBSERVED_MARKET_VOLUME_AND_LIQUIDITY")return "metadata_not_ready";
@@ -76,6 +77,8 @@ export function operatingUnavailableReason(error: unknown): "empty_book"|"metada
     || error.message === "operating:Error: maker_source:validated_backdated_delta:")return "backdated_delta";
   if(error.message === "maker_source:validated_rest_tick_mismatch"
     || error.message === "operating:Error: maker_source:validated_rest_tick_mismatch:")return "rest_tick_mismatch";
+  if(error.message === "maker_source:validated_initial_snapshot_unavailable"
+    || error.message === "operating:Error: maker_source:validated_initial_snapshot_unavailable:")return "initial_snapshot_unavailable";
   return null;
 }
 function atomic(file: string, value: unknown) { const tmp = file + "." + randomUUID() + ".tmp"; writeFileSync(tmp,json(value),{flag:"wx",mode:0o600}); renameSync(tmp,file); }
@@ -247,17 +250,19 @@ export async function runOperatingMaker(admissionFile: string, test?: { clock:()
           normalEnd=term.reason==="slot_deadline" || now().utc>=slot+300000 || stopping;
           emit("SOURCE_ATTEMPT_END",{epoch,termination:term});
         } catch(e){state.lastSourceFault=String(e);emit("SOURCE_ATTEMPT_FAULT",{epoch,error:String(e)});
-          if(now().utc>=slot+300000)normalEnd=true;
-          else if((availability=operatingUnavailableReason(e))) {
+          if((availability=operatingUnavailableReason(e))) {
             cancel("source_"+availability);
             emit(availability==="empty_book"?"EMPTY_BOOK_RESYNC":"SOURCE_UNAVAILABLE_RESYNC",{epoch,slot,attempt,reason:availability});
           }
-          else if(String(e).includes("maker_source:") || String(e).includes("maker_operating_source:") || String(e).includes("source_metadata:") || String(e).includes("maker_operating:"))stop("source_correctness_fault");
+          else if(e instanceof SyntaxError || String(e).includes("paper_startup:") || String(e).includes("maker_source:") || String(e).includes("maker_operating_source:") || String(e).includes("source_metadata:") || String(e).includes("maker_operating:"))stop("source_correctness_fault");
+          else if(now().utc>=slot+300000)normalEnd=true;
         } finally {
           const finalCapture=capture as Capture;
           let cleanupFailure:unknown=null, reconciled=false;
           try { finalCapture.stop("attempt_cleanup"); await finalCapture.settleCallbacks(); }
           catch(e) { cleanupFailure=e; }
+          try { (engine as ReturnType<typeof createIsolatedMaker>|null)?.dispose(); }
+          catch(e) { cleanupFailure ??= e; }
           const finalSink=sink as Sink|null;
           try {
             if(finalSink){cancel("attempt_end");const terminal=finalSink.cancelAll();

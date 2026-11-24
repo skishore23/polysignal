@@ -6,6 +6,7 @@ import { OPERATING_PROTOCOL, isUnavailableEmptyBook, operatingUnavailableReason,
   type OperatingAdmission } from '../../scripts/research/maker_operating';
 import { installStartupSink, newIsolatedStartupDatabase, type StartupContract } from '../../scripts/research/maker_quote_startup';
 import { currentSlotMetadataUrl, type RawCapture } from '../../scripts/research/maker_startup_capture';
+import { RegimeGate } from '../../apps/worker/src/regime/RegimeGate';
 
 const START = 1_800_000_000_000, CONDITION = `0x${'a'.repeat(64)}`;
 const OWNER = path.resolve('../Emergent/docs/research/plans/ongoing-owner-2026-11-18/28-continuous-paper-operation-and-burst.txt');
@@ -18,6 +19,7 @@ function setup(options: { slots?: number; samples?: number; minimum?: number; fa
   mixedArchiveFaultFirstAttempt?: boolean; mixedBookSidesFirstAttempt?: boolean; missingMetadataAttempts?: number;
   noEligibleAttempts?: number; malformedGammaIdentity?: boolean; tickChangeFirstAttempt?: boolean;
   restTickMismatchAttempts?: number; restTickMismatchNegRisk?: boolean;
+  mixedUnavailableAttempts?: number; malformedHttp?: "metadata"|"market"|"book"|"fee"; nullGamma?:boolean; expireOnMalformed?:boolean;
   backdatedDeltaFirstAttempt?: boolean; mixedBackdatedFirstAttempt?: boolean; duplicateBackdatedFirstAttempt?: boolean } = {}) {
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
   const out = mkdtempSync(path.resolve('reports/evidence/maker-operating-test-')); dirs.push(out);
@@ -31,7 +33,9 @@ function setup(options: { slots?: number; samples?: number; minimum?: number; fa
   let utc = START; const clock = () => ({ utc, mono: utc - START });
   const captures: { slot: number; attempt: number; startedUtc: number; streamCalls: number; bound: unknown;
     calls: string[]; stopped: boolean; settled: boolean }[] = [];
-  const http = (url: string, body: unknown): RawCapture => { const raw = JSON.stringify(body);
+  const http = (url: string, body: unknown): RawCapture => { const kind=url.includes("gamma-api")?"metadata":url.includes("clob-markets")?"market":url.includes("/book?")?"book":url.includes("/fee-rate?")?"fee":null;
+    const raw = options.malformedHttp===kind ? "{" : options.nullGamma&&kind==="metadata" ? "null" : JSON.stringify(body);
+    if(options.expireOnMalformed&&options.malformedHttp===kind)utc=START+300000;
     return { url, raw, at: clock(), startedAt: clock(), status: 200, sha256: sha(raw) }; };
   const config = { ...JSON.parse(readFileSync('configs/worker.json', 'utf8')), executionMode: 'PAPER' };
   const makeCapture = (slot: number, attempt: number, dir: string) => {
@@ -60,8 +64,10 @@ function setup(options: { slots?: number; samples?: number; minimum?: number; fa
       bindMarket: (x: unknown) => { capture.bound = x; },
       readMarket: async () => { capture.calls.push('market'); utc++;
         return http(`https://clob.polymarket.com/clob-markets/${CONDITION}`, { t: [{ t: '111', o: 'Up' }, { t: '222', o: 'Down' }],
-          mos: minimum, mts: tick, mbf: 0, tbf: 10, fd: { r: .25, e: 1, to: true }, oas: 0 }); },
+          mos: minimum, mts: attempt <= (options.mixedUnavailableAttempts ?? 0) ? .001 : tick,
+          mbf: 0, tbf: 10, fd: { r: .25, e: 1, to: true }, oas: 0 }); },
       readBook: async () => { capture.calls.push('book'); utc++; const row = book();
+        if (attempt <= (options.mixedUnavailableAttempts ?? 0)) row.asks = [];
         if (attempt <= (options.restTickMismatchAttempts ?? 0)) {
           row.tick_size = '0.001';
           if (options.restTickMismatchNegRisk) row.neg_risk = true;
@@ -177,6 +183,56 @@ function seedOwnedCrashDatabase(out: string) {
 }
 
 describe('ordinary continuous operating integration, authored offline inputs only', () => {
+  it.each(['metadata','market','book','fee'] as const)('keeps malformed %s JSON fatal without a new attempt',async malformedHttp=>{
+    const f=setup({malformedHttp}); const state=await f.run();
+    expect(state.stopReason).toBe('source_correctness_fault'); expect(f.captures).toHaveLength(1);
+    expect(f.captures[0]!.streamCalls).toBe(0); expect(state.totalQuotes).toBe(0); expect(state.virtualCashUSDC).toBe('100');
+  });
+  it('keeps malformed Gamma object shape fatal',async()=>{
+    const f=setup({nullGamma:true});const state=await f.run();expect(state.stopReason).toBe('source_correctness_fault');
+    expect(f.captures).toHaveLength(1);expect(state.totalQuotes).toBe(0);
+  });
+  it('does not let slot expiry hide a malformed source receipt',async()=>{
+    const f=setup({malformedHttp:'book',expireOnMalformed:true});const state=await f.run();
+    expect(state.stopReason).toBe('source_correctness_fault');expect(f.captures).toHaveLength(1);expect(state.totalQuotes).toBe(0);
+  });
+  it('uses bounded fresh reads after joint empty/tick unavailability and never opens its socket or quotes', async () => {
+    const f = setup({ mixedUnavailableAttempts: 1 }); vi.spyOn(Date, 'now').mockImplementation(() => f.clock().utc);
+    const state = await f.run(), log = events(f.out);
+    expect(f.captures.map(c=>c.attempt)).toEqual([1,2]);expect(f.captures.map(c=>c.streamCalls)).toEqual([0,1]);
+    expect(f.captures.every(c=>c.calls.join(',')==='metadata,market,book,fee')).toBe(true);
+    expect(log.find(e=>e.kind==='FRESH_RESYNC_GAP').reason).toBe('initial_snapshot_unavailable');
+    expect(log.filter(e=>e.kind==='PAPER_QUOTE').every(e=>e.epoch===2)).toBe(true);
+    expect(state.totalQuotes).toBeGreaterThan(0);expect(state.virtualCashUSDC).toBe('100');expect(state.activeOrders).toBe(0);
+  });
+  it('preserves exhausted attempt3 debt and waits for the next slot on joint empty/tick unavailability', async () => {
+    const prior=setup(),f=setup({mixedUnavailableAttempts:3}),carried=admitOwnedCarry(f,prior);
+    const state=await f.run();expect(f.captures.map(c=>c.attempt)).toEqual([3]);expect(f.captures[0]!.streamCalls).toBe(0);
+    expect(state.totalQuotes).toBe(carried.prior.totalQuotes);expect(state.attempt).toBe(3);
+    expect(state.status).toBe('OFFLINE_FINISHED');expect(state.virtualCashUSDC).toBe('100');expect(state.activeOrders).toBe(0);
+    await f.run();expect(f.captures).toHaveLength(1);
+  });
+  it.each(['normal', 'source_fault', 'construction_failure'] as const)('keeps every closed epoch log stable after %s cleanup', async kind => {
+    const f = setup(kind === 'source_fault' ? { faultAt: 14 } : { samples: 16 });
+    f.config.regimeGating.reloadMs = 1000;
+    let afterCloseMs = 0; vi.spyOn(Date, 'now').mockImplementation(() => f.clock().utc + afterCloseMs);
+    const reload = vi.spyOn(RegimeGate.prototype as any, 'load');
+    if (kind === 'construction_failure') vi.spyOn(RegimeGate.prototype, 'getLoadDiagnostics').mockReturnValue({
+      loaded: false, usingLastGood: false, lastLoadError: 'authored-construction-failure',
+      manifestStampWanted: null, manifestStampLoaded: null, manifestPath: null, manifestMtimeMs: null,
+    });
+    const state = await f.run();
+    expect(state.virtualCashUSDC).toBe('100'); expect(state.activeOrders).toBe(0);
+    expect(state.pendingLiabilityNumerator).toBe('0'); expect(state.fills).toBe(0);
+    if (kind !== 'construction_failure') expect(state.totalQuotes).toBeGreaterThan(0);
+    const logs = readdirSync(f.out).filter(x => /^epoch-[0-9]+$/.test(x))
+      .map(x => path.join(f.out, x, 'engine.ndjson')).filter(file => { try { readFileSync(file); return true; } catch { return false; } });
+    expect(logs.length).toBeGreaterThan(0);
+    const before = logs.map(file => readFileSync(file)), beforeReloads = reload.mock.calls.length;
+    afterCloseMs = 120000; await vi.advanceTimersByTimeAsync(120000);
+    expect(reload).toHaveBeenCalledTimes(beforeReloads); expect(vi.getTimerCount()).toBe(0);
+    logs.forEach((file, i) => expect(readFileSync(file)).toEqual(before[i]));
+  });
   it('classifies only the exact typed empty-book errors as unavailable liquidity', () => {
     expect(isUnavailableEmptyBook(Error('maker_source:empty_book_side'))).toBe(true);
     expect(isUnavailableEmptyBook(Error('operating:Error: maker_source:empty_book_side:'))).toBe(true);
@@ -197,6 +253,8 @@ describe('ordinary continuous operating integration, authored offline inputs onl
       expect(operatingUnavailableReason(Error(message))).toBe('tick_size_change');
     for (const message of ['maker_source:validated_backdated_delta', 'operating:Error: maker_source:validated_backdated_delta:'])
       expect(operatingUnavailableReason(Error(message))).toBe('backdated_delta');
+    for(const message of ['maker_source:validated_initial_snapshot_unavailable','operating:Error: maker_source:validated_initial_snapshot_unavailable:'])expect(operatingUnavailableReason(Error(message))).toBe('initial_snapshot_unavailable');
+    for(const cause of [Error('operating:Error: maker_source:validated_initial_snapshot_unavailable:archive failure'),'maker_source:validated_initial_snapshot_unavailable',Error('unsupported maker_source:validated_initial_snapshot_unavailable')])expect(operatingUnavailableReason(cause)).toBeNull();
     for (const message of ['maker_source:validated_rest_tick_mismatch', 'operating:Error: maker_source:validated_rest_tick_mismatch:'])
       expect(operatingUnavailableReason(Error(message))).toBe('rest_tick_mismatch');
     for (const cause of [
@@ -406,7 +464,7 @@ describe('ordinary continuous operating integration, authored offline inputs onl
   it('opens no socket or quote on REST tick disagreement and quotes only after fresh matching metadata and history', async () => {
     const f = setup({ restTickMismatchAttempts: 1 }); vi.spyOn(Date, 'now').mockImplementation(() => f.clock().utc);
     const state = await f.run(), log = events(f.out);
-    expect(OPERATING_PROTOCOL.schema).toBe('ORDINARY_PAPER_MAKER_OPERATING_V7');
+    expect(OPERATING_PROTOCOL.schema).toBe('ORDINARY_PAPER_MAKER_OPERATING_V8');
     expect(OPERATING_PROTOCOL.source.activityMetricRepresentation).toContain('trading quantity scale9 precision unchanged');
     expect(f.captures.map(c => c.attempt)).toEqual([1, 2]); expect(f.captures.map(c => c.streamCalls)).toEqual([0, 1]);
     expect(f.captures.every(c => c.calls.join(',') === 'metadata,market,book,fee' && c.settled)).toBe(true);

@@ -50,6 +50,10 @@ function venueTime(value: unknown, receiveUtc: number) {
   check(t <= receiveUtc, "future_venue_time");
   return t;
 }
+function sourceJson<T>(decode: () => T): T {
+  try { return decode(); }
+  catch (error) { if (error instanceof SyntaxError) throw Error("maker_source:malformed_json"); throw error; }
+}
 
 /** Bind the four original capture receipts once. Callers enforce transport/frontier custody. */
 export function createOperatingSourceState(
@@ -60,7 +64,7 @@ export function createOperatingSourceState(
   if (maxTradesPerSlot !== undefined) {
     check(Number.isSafeInteger(maxTradesPerSlot) && maxTradesPerSlot > 0, "invalid_trade_capacity");
   }
-  const initialRestShape = object(JSON.parse(input.clobBook.raw));
+  const initialRestShape = object(sourceJson(() => JSON.parse(input.clobBook.raw)));
   check(Array.isArray(initialRestShape.bids) && Array.isArray(initialRestShape.asks), "book_side_schema");
   string(initialRestShape.hash);
   const initialTick=decimal(initialRestShape.tick_size,true).units;
@@ -71,7 +75,9 @@ export function createOperatingSourceState(
       check(p.units>0n && p.units<scale && p.units%initialTick===0n,"price_grid");
       check(q.units>0n && !seen.has(p.units),"duplicate_or_empty_level");seen.add(p.units);}
   }
-  const base = deriveMakerStartupInputs({ ...input, stream: [] }, { classifyRestTickMismatch: true });
+  const base = sourceJson(() => deriveMakerStartupInputs({ ...input, stream: [] }, {
+    classifyRestTickMismatch: true, classifyInitialSnapshotUnavailable: true,
+  }));
   const { identity } = base;
   const { token, market, condition } = identity;
   const v2 = identity.protocolVersion === "v2";

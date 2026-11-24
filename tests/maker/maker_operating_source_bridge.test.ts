@@ -61,6 +61,48 @@ function comparePrefixes(stream: BridgeStreamItem[]) {
 }
 
 describe("incremental original-token observation state", () => {
+  function mixedUnavailable() {
+    const f = fixture(), m = JSON.parse(f.clobMarket.raw), b = JSON.parse(f.clobBook.raw);
+    m.minimum_tick_size = .001; b.asks = [];
+    f.clobMarket.raw = JSON.stringify(m); f.clobBook.raw = JSON.stringify(b); return f;
+  }
+  it("rejects the joint supported metadata tick disagreement and empty snapshot without choosing a grid", () => {
+    const f = mixedUnavailable(), before = JSON.stringify(f);
+    expect(() => deriveMakerStartupInputs({...f,stream:[]})).toThrow(/^maker_source:tick_or_minimum$/);
+    expect(() => createOperatingSourceState(f)).toThrow(/^maker_source:validated_initial_snapshot_unavailable$/);
+    expect(JSON.stringify(f)).toBe(before);
+  });
+  it.each([
+    ["wrong condition",(f:any,b:any)=>{b.market="0x"+"b".repeat(64)}],
+    ["wrong token",(f:any,b:any)=>{b.asset_id="999"}],
+    ["wrong version",(f:any,b:any)=>{b.version="v2"}],
+    ["unsupported REST tick",(f:any,b:any)=>{b.tick_size="0.0005"}],
+    ["all grids disagree",(f:any,b:any)=>{b.tick_size="0.1"}],
+    ["negative risk",(f:any,b:any)=>{b.neg_risk=true}],
+    ["conflicting minimum",(f:any,b:any)=>{b.min_order_size="6"}],
+    ["zero minimum",(f:any,b:any)=>{b.min_order_size="0"}],
+    ["future time",(f:any,b:any)=>{b.timestamp=String(start+11)}],
+    ["missing hash",(f:any,b:any)=>{delete b.hash}],
+    ["malformed side",(f:any,b:any)=>{b.asks=null}],
+    ["off-grid",(f:any,b:any)=>{b.bids[0].price="0.4301"}],
+    ["duplicate level",(f:any,b:any)=>{b.bids.push(b.bids[0])}],
+    ["zero level size",(f:any,b:any)=>{b.bids[0].size="0"}],
+    ["invalid fee",(f:any)=>{f.tokenFee.raw='{"base_fee":true}'}],
+    ["invalid market fee",(f:any)=>{const m=JSON.parse(f.clobMarket.raw);m.maker_base_fee=-1;f.clobMarket.raw=JSON.stringify(m)}],
+    ["fee chronology",(f:any)=>{f.tokenFee.at=at(13)}],
+  ] as const)("keeps the joint pattern plus %s fatal",(_name,mutate)=>{
+    const f=mixedUnavailable(),b=JSON.parse(f.clobBook.raw);mutate(f,b);f.clobBook.raw=JSON.stringify(b);
+    let error:unknown;try{createOperatingSourceState(f)}catch(e){error=e}
+    expect(error).toBeInstanceOf(Error);expect(String(error)).not.toContain('validated_initial_snapshot_unavailable');
+    expect(String(error)).not.toBe('Error: maker_source:empty_book_side');
+  });
+  it("preserves fatal nonempty metadata disagreement and the old clean-empty reason",()=>{
+    const nonempty=mixedUnavailable(),b=JSON.parse(nonempty.clobBook.raw);b.asks=[{price:"0.54",size:"12"}];nonempty.clobBook.raw=JSON.stringify(b);
+    expect(()=>createOperatingSourceState(nonempty)).toThrow(/^maker_source:tick_or_minimum$/);
+    const clean=fixture(),c=JSON.parse(clean.clobBook.raw);c.asks=[];clean.clobBook.raw=JSON.stringify(c);
+    expect(()=>createOperatingSourceState(clean)).toThrow(/^maker_source:empty_book_side$/);
+    clean.tokenFee!.raw='{"base_fee":true}';expect(()=>createOperatingSourceState(clean)).toThrow(/^maker_source:fee_rate_schema$/);
+  });
   function restMismatch() {
     const f = fixture(), book = JSON.parse(f.clobBook.raw);
     book.tick_size = "0.001"; book.bids[1].price = "0.471";
@@ -333,6 +375,25 @@ describe("incremental original-token observation state", () => {
 });
 
 const v7 = join(process.cwd(), "reports/evidence/maker-startup-codex-20261123-v7-reanchor");
+const stoppedV7 = join(process.env.POLYSIGNAL_RETAINED_PAPER_ROOT ?? join(process.cwd(), "reports/evidence"),
+  "maker-operating-owner28-20261124-v7/epoch-000327/source");
+it.skipIf(!existsSync(join(stoppedV7,"ledger.json")))("preserves exact stopped epoch327 and rejects its mixed unavailable snapshot prospectively", async () => {
+  const {selectCurrentBtcMarket} = await import("../../scripts/research/maker_paper_startup");
+  const pins = { metadata:"28868ff3e45cfd16a11781440fe8f8f4d77ce16f4120451c2a01c627f00524fb",
+    market:"1f0941e1dac8ad42411c2d39a1f927f557115d07eddea5baf1bd07245ea7c237",
+    book:"9dd07cb9bcbd844ebc82e66cc96b7a07049c618aa7d46bc060119a6120f3fead",
+    fee:"72f0f488905219fa9b2f2c5374dfbf9e83345b1fa38826015b15119ac221a079" };
+  const ledger=JSON.parse(readFileSync(join(stoppedV7,"ledger.json"),"utf8"));
+  const get=(name:keyof typeof pins)=>{const r=ledger.httpProofs.find((x:{http:string})=>x.http===name);
+    const raw=readFileSync(join(stoppedV7,"http",name+".bin"),"utf8");expect(hash(raw)).toBe(pins[name]);
+    expect(r.sha256).toBe(pins[name]);return{raw,at:r.at,url:r.url};};
+  const gamma=get("metadata"),tokenFee=get("fee"),selection=selectCurrentBtcMarket(gamma);
+  const input={gamma,selection,tokenFee,clobMarket:get("market"),clobBook:get("book"),decision:tokenFee.at,
+    originalLabel:selection.selected!.outcomes[0]!.label,topKLevels:200};
+  expect(ledger.wsMessages).toBe(0);
+  expect(()=>deriveMakerStartupInputs({...input,stream:[]})).toThrow(/^maker_source:tick_or_minimum$/);
+  expect(()=>createOperatingSourceState(input)).toThrow(/^maker_source:validated_initial_snapshot_unavailable$/);
+});
 const v3 = join(process.cwd(), "reports/evidence/maker-operating-owner28-20261123-v3/epoch-000005/source");
 const v5tick = join(process.cwd(), "reports/evidence/maker-operating-owner28-20261123-v5/epoch-000112/source");
 it.skipIf(!existsSync(join(v5tick,"ledger.json")))("classifies the exact retained V5 REST tick mismatch without accepting its book or rewriting evidence", async () => {

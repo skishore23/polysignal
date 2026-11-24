@@ -4,6 +4,8 @@ import path from "node:path";
 import { RUN_PROTOCOL, inputHashes, runPaperStartup, selectCurrentBtcMarket, sha, validateAdmission } from "../../scripts/research/maker_paper_startup";
 import { STARTUP_METADATA_URL, currentSlotMetadataUrl, type StartupSourceCapture, type RawCapture } from "../../scripts/research/maker_startup_capture";
 import { BeliefEngine } from "../../apps/worker/src/belief/BeliefEngine";
+import { RegimeGate } from "../../apps/worker/src/regime/RegimeGate";
+import Database from "better-sqlite3";
 
 const start = 1_800_000_000_000, condition = "0x" + "a".repeat(64);
 const text = (x: unknown) => JSON.stringify(x, null, 2) + "\n";
@@ -72,6 +74,28 @@ function setup(minimum = 0.1, failure = false, offset = 0, lateSample?: number) 
 }
 
 describe("complete no-fill startup wiring", () => {
+  it.each(['post_dispose', 'post_drain', 'both'] as const)("still cancels an actual authored quote after %s terminal cleanup error", async kind => {
+    const f = setup(), date = vi.spyOn(Date, 'now').mockImplementation(() => f.clock().utc);
+    const close = vi.spyOn(Database.prototype, 'close'), originalDispose = RegimeGate.prototype.dispose;
+    const dispose = vi.spyOn(RegimeGate.prototype, 'dispose').mockImplementation(function(this: RegimeGate) {
+      originalDispose.call(this); if (kind !== 'post_drain') throw Error('authored_post_dispose');
+    });
+    const originalDrain = f.capture.settleCallbacks.bind(f.capture);
+    if (kind !== 'post_dispose') vi.spyOn(f.capture, 'settleCallbacks').mockImplementation(async () => {
+      await originalDrain(); throw Error('authored_post_drain');
+    });
+    try {
+      const result = await runPaperStartup(f.file, { clock: f.clock, capture: f.capture });
+      expect(result.actualQuotes).toBe(1); expect(result.status).toBe('FAILED_TERMINAL_RECONCILIATION');
+      expect(result.cleanupFailure).toContain(kind === 'post_dispose' ? 'authored_post_dispose' : 'authored_post_drain');
+      expect(result.terminal).toMatchObject({ syntheticCashUSDC: '10', pendingLiabilityUSDC: '0', fills: 0, profitUSDC: null });
+      expect(result.afterCancel.orders.every((o: any) => o.status === 'CANCELLED')).toBe(true);
+      expect(close).toHaveBeenCalled();
+      const check = new Database(path.join(f.out, 'paper.sqlite'), { readonly: true, fileMustExist: true });
+      try { expect(check.prepare("SELECT COUNT(*) AS n FROM shadow_orders WHERE status='OPEN'").get()).toEqual({ n: 0 }); }
+      finally { check.close(); }
+    } finally { dispose.mockRestore(); close.mockRestore(); date.mockRestore(); vi.restoreAllMocks(); }
+  });
   it("selects IDs by explicit version, preserving original labels even when both ID sets exist", () => {
     const capture = http(STARTUP_METADATA_URL, [market()], 0);
     expect(selectCurrentBtcMarket(capture).selected).toMatchObject({ protocol_version: "v2",

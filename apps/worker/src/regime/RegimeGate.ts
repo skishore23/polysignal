@@ -191,6 +191,8 @@ export class RegimeGate {
   private manifestStampLoaded: string | null = null;
   private manifestPathLoaded: string | null = null;
   private manifestMtimeMsLoaded: number | null = null;
+  private reloadTimer: ReturnType<typeof setInterval> | undefined;
+  private disposed = false;
 
   constructor(config: RegimeGateConfig, logger: Logger) {
     this.config = config;
@@ -198,9 +200,18 @@ export class RegimeGate {
     if (this.config.enabled) {
       this.load();
       if (this.config.reloadMs > 0) {
-        setInterval(() => this.load(), this.config.reloadMs).unref();
+        this.reloadTimer = setInterval(() => { if (!this.disposed) this.load(); }, this.config.reloadMs);
+        this.reloadTimer.unref();
       }
     }
+  }
+
+  /** Only the owner of this gate disposes it; injected/shared consumers do not. */
+  public dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    if (this.reloadTimer !== undefined) clearInterval(this.reloadTimer);
+    this.reloadTimer = undefined;
   }
 
   private decisionCounter = 0;
@@ -645,6 +656,7 @@ export class RegimeGate {
   }
 
   private load(): void {
+    if (this.disposed) return;
     try {
       const snapshot = this.loadSnapshot();
       this.snapshot = snapshot;

@@ -213,3 +213,12 @@ settled inventory. Conflicting terminal identities, unverified historical counte
 and trades arriving before their local order stay quarantined/deferred. This does
 not certify account balances, paid fees, signed limits or replay completeness.
 Regression: `tests/execution/user_ws_reconciler.test.ts` (mocked sockets/in-memory DB).
+
+### V8 paper source recovery and owned timers
+
+The sustained maker may discard an independently validated joint empty-book/tick
+conflict and resync within the existing three attempts per slot. It never adopts
+a disagreeing grid or quotes the rejected snapshot; malformed evidence remains
+fatal. Isolated maker owners dispose their RegimeGate reload timer after callback
+drain and retain terminal cancellation even when cleanup fails. V7 inputs and
+terminal bank remain archived; V8 carries the same virtual bank without reset.

@@ -248,6 +248,7 @@ export function createIsolatedMaker(db: Database.Database, config: any, logger: 
   requireThat(guardedDatabases.has(db), "installed_sink_required");
   requireThat(config.executionMode === "PAPER" && config.regimeGating.enabled, "ordinary_paper_config");
   const gate = new RegimeGate(config.regimeGating, logger);
+  try {
   requireThat(gate.getLoadDiagnostics().loaded && !gate.getLoadDiagnostics().usingLastGood, "regime_not_loaded");
   const belief = new BeliefEngine([new MicrostructureBeliefProvider()], config.belief, { sqlite: db, logger });
   const getContract = installedContracts.get(db)!;
@@ -280,13 +281,17 @@ export function createIsolatedMaker(db: Database.Database, config: any, logger: 
         reservedShares: (() => { const n = others.reduce((sum,o) => sum + decimal(o.size), 0n);
           return (n / SCALE).toString() + "." + (n % SCALE).toString().padStart(9,"0"); })() };
     } : undefined });
-  return { tick: () => (engine as any).tick() as Promise<void>, getGateDiagnostics: () => gate.getLoadDiagnostics() };
+  let disposed = false;
+  return { tick: () => { requireThat(!disposed, "isolated_maker_disposed"); return (engine as any).tick() as Promise<void>; },
+    getGateDiagnostics: () => gate.getLoadDiagnostics(),
+    dispose: () => { if (disposed) return; disposed = true; try { engine.stop(); } finally { gate.dispose(); } } };
+  } catch (error) { gate.dispose(); throw error; }
 }
 
 export async function oneIsolatedMakerTick(db: Database.Database, config: any, logger: any) {
   const engine = createIsolatedMaker(db, config, logger);
-  await engine.tick();
-  return engine.getGateDiagnostics();
+  try { await engine.tick(); return engine.getGateDiagnostics(); }
+  finally { engine.dispose(); }
 }
 
 /** Compatibility entry point for offline regressions; never a prospective-start receipt. */
