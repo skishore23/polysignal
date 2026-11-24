@@ -13,8 +13,10 @@ def main():
     root = Path(__file__).resolve().parents[2]
     admission_path = args.admission.resolve()
     admission = json.loads(admission_path.read_text())
-    if admission['schema'] != 'CONSERVING_PAPER_FOLLOWER_ADMISSION_V1':
+    if admission['schema'] != 'CONSERVING_PAPER_FOLLOWER_ADMISSION_V2':
         raise ValueError('Wrong paper account scope')
+    if admission.get('inputMode') != 'CLOSED_CAPTURE_FOLLOWER':
+        raise ValueError('Wrong production paper input mode')
     output = Path(admission['outputDirectory'])
     allowed = root / 'reports/evidence'
     if not output.is_relative_to(allowed) or any(p.is_symlink() for p in (output, *output.parents)):

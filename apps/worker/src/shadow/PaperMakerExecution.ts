@@ -135,7 +135,9 @@ export class PaperMakerExecution {
   const existing=this.db.prepare('SELECT * FROM paper_execution_trades WHERE source_id=?').get(t.sourceId) as Row|undefined;
   if(existing){need(existing.fingerprint===fingerprint,'trade_identity_conflict');return {duplicate:true,allocatedShares:text(BigInt(existing.allocated)),aheadConsumedShares:text(BigInt(existing.ahead_consumed))};}
   this.validClock(t.at);const now=this.clock();need(t.at.utc===now.utc&&t.at.mono===now.mono,'trade_receipt_clock');const b=this.book(t.token,t.at),a=this.account()!;
-  need(Number.isSafeInteger(t.venueUtc)&&t.venueUtc<=t.at.utc&&t.at.utc-t.venueUtc<=1000&&t.venueUtc>=b.venueUtc,'trade_clock');
+  // The independently certified activation prefix, not a subsequently received book,
+  // supplies the causal book for order eligibility. Book and trade feeds have distinct event times.
+  need(Number.isSafeInteger(t.venueUtc)&&t.venueUtc<=t.at.utc&&t.at.utc-t.venueUtc<=1000,'trade_clock');
   const watermark=this.db.prepare('SELECT venue_utc FROM paper_execution_watermarks WHERE token=?').get(t.token) as Row|undefined;need(!watermark||t.venueUtc>=watermark.venue_utc,'backdated_trade');
   need(t.at.utc>=a.last_utc&&t.at.mono>=a.last_mono&&p%units(b.tick)===0n,'trade_order');
   return this.db.transaction(()=>{

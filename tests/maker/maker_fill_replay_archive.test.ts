@@ -8,6 +8,7 @@ import type { IncomingMessage, ClientRequest } from 'node:http';
 import type WebSocket from 'ws';
 import { OperatingSourceCapture, verifyOperatingCaptureArchive } from '../../scripts/research/maker_operating_capture';
 import { currentSlotMetadataUrl } from '../../scripts/research/maker_startup_capture';
+import { PaperMakerExecution, type PaperBook } from '../../apps/worker/src/shadow/PaperMakerExecution';
 import { createPaperDatabase, replayPaperEpoch } from '../../scripts/research/maker_fill_paper';
 
 const START=1800000000000, CONDITION='0x'+'a'.repeat(64);
@@ -22,7 +23,7 @@ class Socket extends EventEmitter {
 }
 const logger:any=Object.fromEntries(['info','warn','error','debug','trace','fatal'].map(k=>[k,()=>{}]));
 async function flush(){for(let n=0;n<40;n++)await Promise.resolve()}
-async function archive(options:{mixedTradeBeforeBookAt?:number}={}){
+async function archive(options:{mixedTradeBeforeBookAt?:number; invalidDeltaAt?:number; staleFullAt?:number; validStaleThenDelta?:boolean}={}){
  vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout']});vi.setSystemTime(START);
  mkdirSync(path.resolve('reports/evidence'),{recursive:true});const root=mkdtempSync(path.resolve('reports/evidence/authored-fill-archive-'));dirs.push(root);const epoch=path.join(root,'epoch-000001');mkdirSync(epoch);
  const at=()=>({utc:Date.now(),mono:Date.now()-START});const token='111';
@@ -42,7 +43,16 @@ async function archive(options:{mixedTradeBeforeBookAt?:number}={}){
  let frames=0,samples=0;const proofHeads:string[]=[];
  const pending=capture.stream({onMessage(){frames++},onSample(clock){samples++;const row={number:samples,at:clock,processedFrames:frames,proofHeadSha256:capture.proofHeadSha256()};appendFileSync(path.join(epoch,'samples.ndjson'),JSON.stringify(row)+'\n')},shouldStop:()=>false});socket.emit('open');
  for(let second=1;second<=27;second++){
-  await vi.advanceTimersByTimeAsync(800);socket.message({...book(second),event_type:'book'});await flush();
+  await vi.advanceTimersByTimeAsync(800);
+  if(options.validStaleThenDelta&&second===17){socket.message({event_type:'price_change',market:CONDITION,timestamp:String(Date.now()),price_changes:[{asset_id:token,side:'SELL',price:'0.51',size:'120',best_bid:'0.49',best_ask:'0.51',hash:'authored-fresh-depth'}]})}
+  else if(!(options.validStaleThenDelta&&second===15)){
+   const full={...book(second),event_type:'book'};
+   if(options.validStaleThenDelta&&second===16){full.timestamp=String(START+14799);full.bids.push({price:'0.48',size:'700'})}
+   socket.message(full);
+  }
+  await flush();
+  if(options.invalidDeltaAt===second){socket.message({event_type:'price_change',market:CONDITION,timestamp:String(Date.now()),price_changes:[{asset_id:token,side:'SELL',price:'0.49',size:'100',best_bid:'0.49',best_ask:'0.51',hash:'authored-conflicting-bbo'}]});await flush()}
+  if(options.staleFullAt===second){socket.message({...book(second),event_type:'book',timestamp:String(Date.now()-1),bids:[{price:'0.47',size:'900'}]});await flush()}
   if(second===2){socket.emit('ping',Buffer.from('authored-ping'));socket.emit('pong',Buffer.from('authored-pong'));socket.message('PONG')}
   if(second===13||second>=15){const print={event_type:'last_trade_price',market:CONDITION,asset_id:token,timestamp:String(Date.now()),price:'0.50',size:second===13?'5':'100',side:second===13?'BUY':'SELL',fee_rate_bps:'2500',transaction_hash:'0x'+second.toString(16).padStart(64,'0')};socket.message(options.mixedTradeBeforeBookAt===second?[print,{...book(second),event_type:'book'}]:print);await flush()}
   proofHeads.push(capture.proofHeadSha256());await vi.advanceTimersByTimeAsync(200);await flush();
@@ -90,6 +100,33 @@ describe('actual archive-to-MakerLoop paper replay, all transports authored offl
   expect(out.sourceBoundary).toBe('MODEL_INAPPLICABLE_LATER_BOOK_IN_TRADE_FRAME');expect(out.samplesApplied).toBeLessThan(27);
   expect(out.terminal.snapshot.orders.length).toBeGreaterThan(0);expect(out.terminal.snapshot.orders.every((o:any)=>!['OPEN','PARTIAL'].includes(o.status))).toBe(true);
   expect(out.fills).toHaveLength(0);expect(out.terminal.snapshot.cashUSDC).toBe('100.000000000000000000');expect(out.terminal.snapshot.reservedBuyUSDC).toBe('0.000000000000000000');
+ });
+
+ it.each(['delta_bbo_mismatch','backdated_full_snapshot'] as const)('cancels and withholds through %s until a valid full reanchor',async kind=>{
+  const f=await archive(kind==='delta_bbo_mismatch'?{invalidDeltaAt:16}:{staleFullAt:16}),db=database(f.root,'invalid-chain-'+kind);
+  const gap:{at:number;active:number;cash:string;shares:unknown}[]=[];
+  const out=await replayPaperEpoch(f.epoch,db,f.config,logger,{afterCommit({at}){if(at.utc===START+15800)gap.push({at:at.utc,active:(db.prepare("SELECT COUNT(*) n FROM shadow_orders WHERE status IN ('OPEN','PARTIAL')").get() as any).n,cash:(db.prepare('SELECT cash FROM paper_execution_account').get() as any).cash,shares:db.prepare('SELECT * FROM paper_execution_positions').all()})}});
+  expect(out.sourceBoundary).toBeNull();expect(gap.length).toBeGreaterThan(1);expect(gap.at(-1)!.active).toBe(0);
+  expect(gap.every(g=>g.cash===gap[0]!.cash&&JSON.stringify(g.shares)===JSON.stringify(gap[0]!.shares))).toBe(true);
+  expect(out.invalidSourceFrames).toBeGreaterThan(0);
+  expect(out.terminal.snapshot.orders.every((o:any)=>o.ts!==START+16000)).toBe(true);
+  expect(out.fills.some((f:any)=>f.ts===START+15800)).toBe(false);
+  expect(out.terminal.snapshot.orders.some((o:any)=>o.ts>=START+17000)).toBe(true);expect(out.fills.some((f:any)=>f.ts>=START+17800)).toBe(true);
+  expect(out.terminal.snapshot.reservedBuyUSDC).toBe('0.000000000000000000');
+ });
+
+ it('retains valid-but-stale full depth for a later fresh delta even when BBO never changes',async()=>{
+  const f=await archive({validStaleThenDelta:true}),db=database(f.root,'stale-valid-depth');const books:PaperBook[]=[];
+  const original=PaperMakerExecution.prototype.observeBook;
+  vi.spyOn(PaperMakerExecution.prototype,'observeBook').mockImplementation(function(this:PaperMakerExecution,b:PaperBook){books.push(structuredClone(b));return original.call(this,b)});
+  const out=await replayPaperEpoch(f.epoch,db,f.config,logger);expect(out.sourceBoundary).toBeNull();
+  expect(out.terminal.snapshot.orders.every((o:any)=>o.ts!==START+16000)).toBe(true);
+  // Freshness returns through a DELTA, not a full snapshot. Same BBO would not
+  // expose the missing second level through a best-price-only comparison.
+  const fresh=books.filter(b=>b.at.utc===START+16800);
+  expect(fresh.length).toBeGreaterThan(0);expect(fresh.every(b=>b.bids.some(l=>l.price==='0.48'&&l.size==='700'))).toBe(true);
+  expect(fresh.every(b=>b.asks.some(l=>l.price==='0.51'&&l.size==='120'))).toBe(true);
+  expect(out.terminal.snapshot.orders.some((o:any)=>o.ts===START+17000)).toBe(true);
  });
 
 });
