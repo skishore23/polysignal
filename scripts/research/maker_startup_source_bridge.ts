@@ -54,6 +54,22 @@ function decimal(value: unknown, wireString = false): { text: string; units: big
   check(Number.isFinite(n) && n <= Number.MAX_SAFE_INTEGER, "numeric_range");
   return { units, n, text };
 }
+// Activity observations feed the existing SQLite REAL market metrics, not
+// exact order/fee/risk arithmetic. Keep their source decimal precision in the
+// immutable raw receipt; do not round them to the trading-quantity scale.
+function activityMetric(value: unknown): number {
+  check(typeof value === "string" || typeof value === "number", "decimal_type");
+  const text = String(value);
+  check(/^(0|[1-9]\d*)(\.\d+)?$/.test(text), "decimal_format");
+  const [whole = "", fraction = ""] = text.split(".");
+  const maximum = String(Number.MAX_SAFE_INTEGER);
+  const withinExactBound = whole.length < maximum.length || (whole.length === maximum.length
+    && (whole < maximum || (whole === maximum && !/[1-9]/.test(fraction))));
+  const n = Number(text);
+  check(withinExactBound && Number.isFinite(n) && n <= Number.MAX_SAFE_INTEGER
+    && (n !== 0 || !/[1-9]/.test(text)), "numeric_range");
+  return n;
+}
 function ordered(before: StartupClock, after: StartupClock) {
   for (const c of [before, after]) {
     check(Number.isSafeInteger(c.utc) && c.utc >= 0 && Number.isFinite(c.mono) && c.mono >= 0, "clock");
@@ -124,8 +140,8 @@ function original(input: MakerStartupSourceInput) {
     minimumTick: decimal(row.orderPriceMinTickSize).text, feesEnabled: row.feesEnabled ?? null,
     feeSchedule: schedule ? {rate: decimal(schedule.rate).text, exponent: decimal(schedule.exponent).n,
       takerOnly: schedule.takerOnly === true, rebateRate: schedule.rebateRate == null ? null : decimal(schedule.rebateRate).text} : null,
-    label: outcome.label, volume: row.volume == null ? null : decimal(row.volume).n,
-    liquidity: row.liquidity == null ? null : decimal(row.liquidity).n };
+    label: outcome.label, volume: row.volume == null ? null : activityMetric(row.volume),
+    liquidity: row.liquidity == null ? null : activityMetric(row.liquidity) };
 }
 function feeRate(capture: BridgeHttpCapture, token: string): number {
   const row = object(read(capture, clob + "/fee-rate?token_id=" + token));

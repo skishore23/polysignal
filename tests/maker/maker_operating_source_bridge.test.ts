@@ -437,3 +437,86 @@ it.skipIf(!existsSync(join(v7, "ledger.json")))("matches all 13 retained V7 deci
   expect(last.trades).toHaveLength(24);
   expect(last.missing).toEqual([]);
 }, 30_000);
+
+function withActivityMetrics(volume: unknown, liquidity: unknown): MakerStartupSourceInput {
+  const f = fixture(), rows = JSON.parse(f.gamma.raw);
+  rows[0].volume = volume; rows[0].liquidity = liquidity;
+  f.gamma.raw = JSON.stringify(rows);
+  (f.selection as {raw_body_sha256: string}).raw_body_sha256 = hash(f.gamma.raw);
+  return f;
+}
+describe("activity metric precision is separate from exact trading quantities", () => {
+  it("keeps observed activity decimals beyond nine places without editing their receipt", () => {
+    const f = withActivityMetrics("165.62686399999998", "29.12345678912345"), before = f.gamma.raw;
+    for (const identity of [deriveMakerStartupInputs(f).identity, createOperatingSourceState(f).snapshot(f.decision).identity]) {
+      expect(identity.volume).toBe(Number("165.62686399999998"));
+      expect(identity.liquidity).toBe(Number("29.12345678912345"));
+    }
+    expect(f.gamma.raw).toBe(before); expect(JSON.parse(f.gamma.raw)[0].volume).toBe("165.62686399999998");
+  });
+  it.each([0, "0", "0.00000000000000000000"])("preserves an observed zero instead of missing activity: %j", value => {
+    const f = withActivityMetrics(value, value), d = deriveMakerStartupInputs(f);
+    expect(d.identity.volume).toBe(0); expect(d.identity.liquidity).toBe(0);
+    expect(d.missing).not.toContain("OBSERVED_MARKET_VOLUME_AND_LIQUIDITY");
+  });
+  it("preserves the exact maximum activity boundary with zero fractional value", () => {
+    const f = withActivityMetrics("9007199254740991.0000000000", Number.MAX_SAFE_INTEGER);
+    const d = deriveMakerStartupInputs(f);
+    expect(d.identity.volume).toBe(Number.MAX_SAFE_INTEGER);
+    expect(d.identity.liquidity).toBe(Number.MAX_SAFE_INTEGER);
+  });
+  it.each([null, undefined])("keeps missing activity unknown: %j", value => {
+    const d = deriveMakerStartupInputs(withActivityMetrics(value, value));
+    expect(d.identity.volume).toBeNull(); expect(d.identity.liquidity).toBeNull();
+    expect(d.missing).toContain("OBSERVED_MARKET_VOLUME_AND_LIQUIDITY");
+  });
+  it.each([true, [], {}, "", " 1", "1 ", "+1", "-1", "-0", "01", ".1", "1.",
+    "1e-7", "NaN", "Infinity", "9007199254740992", "9007199254740991.0000000001", "9".repeat(400), "0." + "0".repeat(400) + "1"])
+    ("rejects malformed, out-of-range or underflowing activity: %j", value => {
+      for (const f of [withActivityMetrics(value, "1"), withActivityMetrics("1", value)]) {
+        expect(() => deriveMakerStartupInputs(f)).toThrow(/maker_source:(decimal_type|decimal_format|numeric_range)/);
+        expect(() => createOperatingSourceState(f)).toThrow(/maker_source:(decimal_type|decimal_format|numeric_range)/);
+      }
+    });
+  it.each(["price", "size", "minimum", "fee"])("does not widen exact %s trading precision", field => {
+    const f = withActivityMetrics("165.62686399999998", "29.12345678912345");
+    if (field === "fee") f.tokenFee!.raw = '{"base_fee":35,"fee_rate_bps":"35.0000000001"}';
+    else { const book = JSON.parse(f.clobBook.raw);
+      if (field === "minimum") book.min_order_size = "5.0000000001";
+      else book.bids[0][field] = field === "price" ? "0.4300000001" : "25.0000000001";
+      f.clobBook.raw = JSON.stringify(book);
+    }
+    expect(() => deriveMakerStartupInputs(f)).toThrow(/^maker_source:decimal_format$/);
+    expect(() => createOperatingSourceState(f)).toThrow(/^maker_source:decimal_format$/);
+  });
+});
+
+const v6metric = join(process.cwd(), "reports/evidence/maker-operating-owner28-20261124-v6/epoch-000116/source");
+it.skipIf(!existsSync(join(v6metric, "ledger.json")))("accepts original retained V6 activity precision without rewriting capture or relaxing trading math", async () => {
+  const {selectCurrentBtcMarket} = await import("../../scripts/research/maker_paper_startup");
+  const pins = {
+    metadata:"d7fd8ae3a32bea8e38cdf565bbe9a86359c7d8cd12092eab7f3b4c2f77542bfa",
+    market:"9d64eaf5b51ed28876454ef18e4a364c076806edb038e2eb5450057b915c012d",
+    book:"41581f0ad52f05fea31d175f4d04cb06da12c5a96e19cd848d018c39e1a82133",
+    fee:"72f0f488905219fa9b2f2c5374dfbf9e83345b1fa38826015b15119ac221a079",
+  };
+  const ledger = JSON.parse(readFileSync(join(v6metric,"ledger.json"),"utf8"));
+  expect(ledger.wsMessages).toBe(0); expect(ledger.bodyBytes).toBe(10597);
+  const get = (name: keyof typeof pins) => {
+    const receipt = ledger.httpProofs.find((h:{http:string}) => h.http===name);
+    const raw = readFileSync(join(v6metric,"http",name+".bin"),"utf8");
+    expect(hash(raw)).toBe(pins[name]); expect(receipt.sha256).toBe(pins[name]);
+    return {raw,at:receipt.at,url:receipt.url};
+  };
+  const gamma=get("metadata"),tokenFee=get("fee"),selection=selectCurrentBtcMarket(gamma);
+  const input = {gamma,tokenFee,selection,clobMarket:get("market"),clobBook:get("book"),decision:tokenFee.at,
+    originalLabel:selection.selected!.outcomes[0]!.label,topKLevels:200};
+  expect(JSON.parse(gamma.raw).volume).toBe("165.62686399999998");
+  for (const d of [deriveMakerStartupInputs({...input,stream:[]}), createOperatingSourceState(input).snapshot(tokenFee.at)]) {
+    expect(d.identity.volume).toBe(165.62686399999998);
+    expect(d.missing).not.toContain("OBSERVED_MARKET_VOLUME_AND_LIQUIDITY");
+    expect(d.book.tick).toBe("0.01"); expect(d.book.minimum).toBe("5"); expect(d.book.minimumShares).toBe("5");
+    expect(d.sourceHashes.gamma).toBe(pins.metadata);
+  }
+  expect(hash(gamma.raw)).toBe(pins.metadata);
+});

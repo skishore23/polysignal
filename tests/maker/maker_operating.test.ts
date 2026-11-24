@@ -406,7 +406,8 @@ describe('ordinary continuous operating integration, authored offline inputs onl
   it('opens no socket or quote on REST tick disagreement and quotes only after fresh matching metadata and history', async () => {
     const f = setup({ restTickMismatchAttempts: 1 }); vi.spyOn(Date, 'now').mockImplementation(() => f.clock().utc);
     const state = await f.run(), log = events(f.out);
-    expect(OPERATING_PROTOCOL.schema).toBe('ORDINARY_PAPER_MAKER_OPERATING_V6');
+    expect(OPERATING_PROTOCOL.schema).toBe('ORDINARY_PAPER_MAKER_OPERATING_V7');
+    expect(OPERATING_PROTOCOL.source.activityMetricRepresentation).toContain('trading quantity scale9 precision unchanged');
     expect(f.captures.map(c => c.attempt)).toEqual([1, 2]); expect(f.captures.map(c => c.streamCalls)).toEqual([0, 1]);
     expect(f.captures.every(c => c.calls.join(',') === 'metadata,market,book,fee' && c.settled)).toBe(true);
     expect(f.captures[1]!.startedUtc - f.captures[0]!.startedUtc).toBeGreaterThanOrEqual(2000);

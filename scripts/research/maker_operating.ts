@@ -17,13 +17,14 @@ export const sha = (x: string | Buffer) => createHash("sha256").update(x).digest
 const json = (x: unknown) => JSON.stringify(x, null, 2) + "\n";
 function check(x: unknown, why: string): asserts x { if (!x) throw Error("maker_operating:" + why); }
 export const OPERATING_PROTOCOL = {
-  schema: "ORDINARY_PAPER_MAKER_OPERATING_V6", venue: "POLYMARKET_ONLY", profile: "OPERATING_BURST_V1",
+  schema: "ORDINARY_PAPER_MAKER_OPERATING_V7", venue: "POLYMARKET_ONLY", profile: "OPERATING_BURST_V1",
   account: PAPER_PROFILES.OPERATING_BURST_V1, sizing: "soft20USDC*positive_regime; exact legal venue floor within hard limits",
   inventoryPreference: "configured K50bps at full200share capacity; changed prospective convention",
   noFills: true, noLiveOrders: true, noPi: true, rewards: false, stopAtFirstQuote: false,
   source: { slotMs: 300000, startBeforeCloseMs: 60000, readsPerAttempt: 4, socketsPerAttempt: 1,
     maxAttemptsPerSlot: 3, retryBackoffMs: [2000,10000], metadataRetryBackoffMs: [90000,90000],
     metadataNotReady: "missing only observed volume/liquidity: no quote; bounded fresh retries, then next fixed slot; generic selection failure remains fatal",
+    activityMetricRepresentation: "raw receipt decimals preserved; finite nonnegative plain-decimal volume/liquidity convert to existing Number/SQLite REAL observations with approximation, exact MAX_SAFE bound and no positive underflow; trading quantity scale9 precision unchanged",
     tickChange: "validated original-token tick event cancels and requires four fresh reads; never change grid in place",
     restTickMismatch: "validated supported REST tick disagreement rejects all terms and requires four fresh reads within existing attempt debt; never adopt the disagreeing grid",
     oldDelta: "fully validated singleton old delta cancels and requires four fresh reads/history; never apply or continue the old chain",
