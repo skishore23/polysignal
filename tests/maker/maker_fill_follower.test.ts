@@ -16,18 +16,21 @@ const json=(v:unknown)=>JSON.stringify(v,null,2)+'\n';const dirs:string[]=[];con
 const oldFD=process.env.PAPER_FILL_LOCK_FD,oldLock=process.env.PAPER_FILL_LOCK_PATH;
 afterEach(()=>{vi.restoreAllMocks();vi.useRealTimers();for(const fd of fds.splice(0))closeSync(fd);for(const d of dirs.splice(0))rmSync(d,{recursive:true,force:true});if(oldFD===undefined)delete process.env.PAPER_FILL_LOCK_FD;else process.env.PAPER_FILL_LOCK_FD=oldFD;if(oldLock===undefined)delete process.env.PAPER_FILL_LOCK_PATH;else process.env.PAPER_FILL_LOCK_PATH=oldLock;});
 class Socket extends EventEmitter{send(_s:any,_o:any,cb:any){cb()}pong(){}terminate(){this.emit('close')}message(v:any){this.emit('message',Buffer.from(JSON.stringify(v)),false)}}
-async function capture(root:string,kind:'valid'|'empty'|'missingActivity'='valid'){
+type CaptureKind='valid'|'empty'|'missingActivity'|'emptyBook'|'emptyBookBadFee'|'emptyBookMalformedSide'|'emptyBookBadLevel'|'emptyBookWrongIdentity'|'emptyBookOffGrid';
+async function capture(root:string,kind:CaptureKind='valid'){
  vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout']});vi.setSystemTime(START);
  const epoch=path.join(root,'epoch-000002');mkdirSync(epoch);const clock=()=>({utc:Date.now(),mono:Date.now()-START}),condition='0x'+'a'.repeat(64);
  const gamma={version:'v2',id:'123',conditionId:condition,slug:'btc-updown-5m-'+START/1000,question:'BTC Up or Down',description:'Authored follower rules',eventStartTime:new Date(START).toISOString(),endDate:new Date(START+300000).toISOString(),active:true,closed:false,archived:false,acceptingOrders:true,enableOrderBook:true,negRisk:false,outcomes:'["Up","Down"]',clobTokenIds:'["999","888"]',positionIds:['111','222'],orderPriceMinTickSize:.01,orderMinSize:.1,volume:kind==='missingActivity'?null:'100',liquidity:kind==='missingActivity'?null:'100',feesEnabled:true,feeSchedule:{rate:.25,exponent:1,takerOnly:true,rebateRate:0}};
  const book={version:'v2',market:condition,asset_id:'111',timestamp:String(START),hash:'authored-follower-book',bids:[{price:'0.49',size:'900'}],asks:[{price:'0.51',size:'100'}],tick_size:'0.01',min_order_size:'0.1',neg_risk:false};
- const bodies=[gamma,{t:[{t:'111',o:'Up'},{t:'222',o:'Down'}],mos:.1,mts:.01,mbf:0,tbf:10,fd:{r:.25,e:1,to:true},oas:0},book,{base_fee:2500}];let n=0;const socket=new Socket();
+ if(kind.startsWith('emptyBook'))book.asks=[];if(kind==='emptyBookMalformedSide')(book as any).bids=null;
+ if(kind==='emptyBookBadLevel')book.bids[0]!.size='-1';if(kind==='emptyBookWrongIdentity')book.asset_id='999';if(kind==='emptyBookOffGrid')book.bids[0]!.price='0.491';
+ const bodies=[gamma,{t:[{t:'111',o:'Up'},{t:'222',o:'Down'}],mos:.1,mts:.01,mbf:0,tbf:10,fd:{r:.25,e:1,to:true},oas:0},book,{base_fee:kind==='emptyBookBadFee'?true:2500}];let n=0;const socket=new Socket();
  const c=new OperatingSourceCapture({metadataUrl:currentSlotMetadataUrl(START),expiresUtcMs:START+300000,freeDiskReserveBytes:0},clock,path.join(epoch,'source'),{freeDiskBytes:()=>1n<<40n,socket:()=>socket as unknown as WebSocket,request:((_u:any,_o:any,cb:any)=>{const body=json(bodies[n++]),req=new EventEmitter() as any;req.destroy=()=>{};req.end=()=>queueMicrotask(()=>{const res=new Readable({read(){}}) as any;res.statusCode=200;res.headers={'content-type':'application/json'};res.rawHeaders=[];res.complete=false;cb(res);res.push(Buffer.from(body));res.complete=true;res.push(null)});return req}) as any});
  await c.readMetadata();c.bindMarket({condition,token:'111',protocolVersion:'v2'});await c.readMarket();await c.readBook();await c.readFee();
- if(kind!=='empty'){const pending=c.stream({onMessage(){},onSample(){},shouldStop:()=>false});socket.emit('open');socket.message({...book,event_type:'book'});for(let i=0;i<30;i++)await Promise.resolve();c.stop('authored_closed');await pending;}else c.stop('authored_empty');
+ if(kind!=='empty'&&!kind.startsWith('emptyBook')){const pending=c.stream({onMessage(){},onSample(){},shouldStop:()=>false});socket.emit('open');socket.message({...book,event_type:'book'});for(let i=0;i<30;i++)await Promise.resolve();c.stop('authored_closed');await pending;}else c.stop('authored_empty');
  await c.settleCallbacks();writeFileSync(path.join(epoch,'samples.ndjson'),'');writeFileSync(path.join(epoch,'epoch-summary.json'),json({reconciled:true,cleanupFailure:null,source:c.ledger()}));vi.useRealTimers();return epoch;
 }
-async function fixture(kind:'valid'|'empty'|'missingActivity'='valid'){
+async function fixture(kind:CaptureKind='valid'){
  mkdirSync(path.resolve('reports/evidence'),{recursive:true});const root=mkdtempSync(path.resolve('reports/evidence/follower-authored-'));dirs.push(root);const source=path.join(root,'source');mkdirSync(source);await capture(source,kind);
  const seedFile=path.join(root,'seed.sqlite'),seed=createPaperDatabase(seedFile);let ms=0;const clock=()=>({utc:START-300000+ms,mono:ms});
  const e=new PaperMakerExecution(seed,FILL_POLICY,clock);e.observeBook({sourceId:'author-seed-book',token:'777',market:'77',tick:'0.01',lot:'0.01',minimumShares:'1',bids:[{price:'0.49',size:'10'}],asks:[{price:'0.60',size:'10'}],at:clock(),venueUtc:clock().utc});
@@ -112,6 +115,18 @@ describe('prospective follower V2 custody and account driver, authored sources o
   try {await expect(runPaperFollower(f.admissionFile,{maxCycles:1})).rejects.toThrow('carried_result_account_mismatch');expect(close).toHaveBeenCalledTimes(1);
    const checkpoint=JSON.parse(readFileSync(path.join(f.output,'state.json'),'utf8'));expect(checkpoint.status).toBe('CHECKPOINTED_STARTUP_FAILURE');expect(checkpoint.account.cashUSDC).toBe('98.000000000000000000');expect(checkpoint.account.heldShares).toEqual({'777':'4.000000000'});expect(checkpoint.modelNetPnlUSDC).toBeNull();expect(checkpoint.complete).toBe(false);expect(existsSync(path.join(f.output,'epoch-000002.json'))).toBe(false);
   } finally {for(const db of opened)if(db.open)db.close();}
+ });
+
+ it('skips a fully validated empty ask book before ordinary execution without resetting the carried bank',async()=>{
+  const f=await fixture('emptyBook'),gate=vi.spyOn(RegimeGate.prototype,'getLoadDiagnostics');
+  const state=await runPaperFollower(f.admissionFile,{maxCycles:2,wait:async()=>{}});
+  expect(gate).not.toHaveBeenCalled();expect(state.status).toBe('WAITING_CLOSED_SOURCE');expect(state.cashUSDC).toBe('98.000000000000000000');expect(state.heldShares).toEqual({'777':'4.000000000'});expect(state.lastModeledEpoch).toBe(1);expect(state.lastClosedEpoch).toBe(2);expect(state.modelNetPnlUSDC).toBeNull();
+  const file=path.join(f.output,'epoch-000002.json'),receipt=JSON.parse(readFileSync(file,'utf8'));expect(receipt.disposition).toBe('SKIP_MODEL_SOURCE_INELIGIBLE');expect(receipt.reason).toBe('STRUCTURAL_SOURCE_TERMS_INELIGIBLE');expect(receipt.detail).toBe('Error: maker_source:empty_book_side');expect(receipt.reward).toBeNull();expect(receipt.modelNetPnlUSDC).toBeNull();
+  const old=readFileSync(file);await runPaperFollower(f.admissionFile,{maxCycles:1});expect(readFileSync(file).equals(old)).toBe(true);
+ });
+ it.each(['emptyBookBadFee','emptyBookMalformedSide','emptyBookBadLevel','emptyBookWrongIdentity','emptyBookOffGrid'] as const)('does not hide malformed evidence behind an empty side: %s',async kind=>{
+  const f=await fixture(kind),gate=vi.spyOn(RegimeGate.prototype,'getLoadDiagnostics');await expect(runPaperFollower(f.admissionFile,{maxCycles:1})).rejects.toThrow(({emptyBookBadFee:'fee_rate_schema',emptyBookMalformedSide:'book_side_schema',emptyBookBadLevel:'decimal_format',emptyBookWrongIdentity:'book_identity',emptyBookOffGrid:'price_grid'})[kind]);
+  expect(gate).not.toHaveBeenCalled();expect(existsSync(path.join(f.output,'epoch-000002.json'))).toBe(false);const state=JSON.parse(readFileSync(path.join(f.output,'state.json'),'utf8'));expect(state.status).toBe('CHECKPOINTED_FAILURE');expect(state.cashUSDC).toBe('98.000000000000000000');expect(state.heldShares).toEqual({'777':'4.000000000'});expect(state.modelNetPnlUSDC).toBeNull();
  });
 
 });

@@ -401,7 +401,7 @@ async function structuralDisposition(epoch:string,topN:number){
   if(!reason){try{const input=metadata(epoch,ledger,topN),source=createOperatingSourceState(input,{maxTradesPerSlot:20000});
     const dynamic=new Set(['FRESH_AUTHORITATIVE_ORIGINAL_BOOK','CURRENT_CANONICAL_FEATURE_SAMPLE','OBSERVED_VOLATILITY_HISTORY','OBSERVED_ORIGINAL_TOKEN_TRADE_FLOW']);
     const missing=source.snapshot(input.decision).missing.filter(r=>!dynamic.has(r));if(missing.length){reason='STATIC_MODEL_INPUTS_MISSING';detail=missing;}
-   }catch(error){const message=String(error);const known=['fill_paper:original_market_missing','maker_source:validated_initial_snapshot_unavailable','maker_source:validated_rest_tick_mismatch','maker_source:tick_or_minimum','maker_source:book_market_limits'];
+   }catch(error){const message=String(error);const known=['maker_source:empty_book_side','fill_paper:original_market_missing','maker_source:validated_initial_snapshot_unavailable','maker_source:validated_rest_tick_mismatch','maker_source:tick_or_minimum','maker_source:book_market_limits'];
     if(known.some(x=>message==='Error: '+x)){reason='STRUCTURAL_SOURCE_TERMS_INELIGIBLE';detail=message;}else throw error;
    }}
   if(!reason&&archive.messages===0)reason='NO_DATA_STREAM';
