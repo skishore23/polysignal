@@ -192,3 +192,25 @@ bounded resync; strict startup and quote agreement remain. Preserve debt across
 restart/carry and do not renew the three-attempt slot budget. createIsolatedMaker
 owns RegimeGate disposal; shared MakerLoop.stop does not dispose an injected gate.
 Close capture callbacks, owned timers, reservations and DB with retained failures.
+
+
+## Conserving paper evaluation (owner37)
+
+- `apps/worker/src/shadow/PaperMakerExecution.ts`: explicit per-arrival modeled
+  queue/cohort activation, original token/grid/lot/TTL, one print budget, exact
+  funded partials and atomic canonical SIMULATEDaccounting. Historical terminal
+  cutoffs outside supported scope return incomplete/null, not future-mark PnL.
+- `scripts/research/maker_fill_paper.ts`: actual ordinaryMakerLoop/session plus
+  closed-capture causal replay, sample applied/retained frontier guards, exact
+  cursor/PRNG restart and retained incomplete account/reservation checkpoints.
+  CLI `node --import tsx scripts/research/maker_fill_paper.ts --admission FILE`
+  runs only a separately reviewed one-source admission in a fresh output path.
+- `scripts/research/maker_fill_paper_service.py`: single-owner counterfactual
+  paper follower launcher; requires its own frozen operating admission. It reuses
+  existing CLOSED source archives and does not duplicate capture subscriptions.
+- `tests/shadow/paper_fill_allocation.test.ts`,
+  `tests/shadow/paper_fill_independent_review.test.ts`,
+  `tests/maker/maker_fill_paper.test.ts`,
+  `tests/maker/maker_fill_replay_archive.test.ts`: adversarial authored allocation,
+  accounting and actual archive/restart checks. Passing these is engineering,
+  not real fills/profit or representation advantage.

@@ -222,3 +222,25 @@ a disagreeing grid or quotes the rejected snapshot; malformed evidence remains
 fatal. Isolated maker owners dispose their RegimeGate reload timer after callback
 drain and retain terminal cancellation even when cleanup fails. V7 inputs and
 terminal bank remain archived; V8 carries the same virtual bank without reset.
+
+
+### Owner37: conserving paper execution and economic research
+
+The owner authorizes a separately typed fill-capable paper mode. The old
+maker_operating V8service remains a NO-FILL quote/cancel source-engineering check;
+its quote count and fixed100bank are not trading results. NEW
+PaperMakerExecution uses declared queue/latency assumptions, conserved public
+print volume, funded partials and canonical SIMULATEDaccounting.
+maker_fill_paper reconstructs causal completed captures with the actual ordinary
+MakerLoop and carries one counterfactual bank; it opens no market connection.
+One-source evaluation requires an exact frozen admission; continuous following
+requires separate code/source/risk review and its kernel single-owner launcher.
+Keep synthetic fills/rebalance disabled and preserve old evidence/accounts.
+
+Research coordination uses Emergent/Codex; legacy Pi budgets/autopilot are not
+this program's researcher. Before material hypothesis/admission decisions check
+current primary papers, official GitHub mechanisms and venue documentation,
+record competing ordinary controls and recalibrate toward economic value through
+sound executable family representations. Neither fills nor constructions alone
+establish alpha, novelty, learning or cheaper lifetime cost. Unknown costs/PnL
+remain unknown. No live routing, signing, funding or framework is authorized.
