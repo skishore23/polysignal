@@ -71,7 +71,7 @@ export function createOperatingSourceState(
       check(p.units>0n && p.units<scale && p.units%initialTick===0n,"price_grid");
       check(q.units>0n && !seen.has(p.units),"duplicate_or_empty_level");seen.add(p.units);}
   }
-  const base = deriveMakerStartupInputs({ ...input, stream: [] });
+  const base = deriveMakerStartupInputs({ ...input, stream: [] }, { classifyRestTickMismatch: true });
   const { identity } = base;
   const { token, market, condition } = identity;
   const v2 = identity.protocolVersion === "v2";

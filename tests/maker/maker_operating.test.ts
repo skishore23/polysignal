@@ -17,6 +17,7 @@ function setup(options: { slots?: number; samples?: number; minimum?: number; fa
   badSampleAt?: number; afterSample?: (out: string) => void; emptyBookFirstAttempt?: boolean; malformedBookFirstAttempt?: boolean;
   mixedArchiveFaultFirstAttempt?: boolean; mixedBookSidesFirstAttempt?: boolean; missingMetadataAttempts?: number;
   noEligibleAttempts?: number; malformedGammaIdentity?: boolean; tickChangeFirstAttempt?: boolean;
+  restTickMismatchAttempts?: number; restTickMismatchNegRisk?: boolean;
   backdatedDeltaFirstAttempt?: boolean; mixedBackdatedFirstAttempt?: boolean; duplicateBackdatedFirstAttempt?: boolean } = {}) {
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
   const out = mkdtempSync(path.resolve('reports/evidence/maker-operating-test-')); dirs.push(out);
@@ -39,7 +40,8 @@ function setup(options: { slots?: number; samples?: number; minimum?: number; fa
       calls: [] as string[], stopped: false, settled: false }; captures.push(capture);
     const offset = utc - slot; let sequence = 0, open = false, priorBid = '0.49';
     const minimum = options.minimum ?? .1;
-    const tick = options.tickChangeFirstAttempt && attempt > 1 ? .001 : .01;
+    const tick = (options.tickChangeFirstAttempt && attempt > 1)
+      || (options.restTickMismatchAttempts && attempt > options.restTickMismatchAttempts) ? .001 : .01;
     const gamma = { version: 'v2', id: '123', conditionId: options.malformedGammaIdentity ? 'invalid-condition' : CONDITION, slug: `btc-updown-5m-${slot / 1000}`,
       question: 'Bitcoin Up or Down, five minutes', description: 'Authored offline operating fixture',
       eventStartTime: new Date(slot).toISOString(), endDate: new Date(slot + 300000).toISOString(),
@@ -59,7 +61,12 @@ function setup(options: { slots?: number; samples?: number; minimum?: number; fa
       readMarket: async () => { capture.calls.push('market'); utc++;
         return http(`https://clob.polymarket.com/clob-markets/${CONDITION}`, { t: [{ t: '111', o: 'Up' }, { t: '222', o: 'Down' }],
           mos: minimum, mts: tick, mbf: 0, tbf: 10, fd: { r: .25, e: 1, to: true }, oas: 0 }); },
-      readBook: async () => { capture.calls.push('book'); utc++; return http('https://clob.polymarket.com/book?token_id=111', book()); },
+      readBook: async () => { capture.calls.push('book'); utc++; const row = book();
+        if (attempt <= (options.restTickMismatchAttempts ?? 0)) {
+          row.tick_size = '0.001';
+          if (options.restTickMismatchNegRisk) row.neg_risk = true;
+        }
+        return http('https://clob.polymarket.com/book?token_id=111', row); },
       readFee: async () => { capture.calls.push('fee'); utc++; return http('https://clob.polymarket.com/fee-rate?token_id=111', { base_fee: 2500 }); },
       proofHeadSha256: () => sha(json({ slot, attempt, sequence })),
       observationFrontier: () => ({ sequence, open }),
@@ -190,6 +197,8 @@ describe('ordinary continuous operating integration, authored offline inputs onl
       expect(operatingUnavailableReason(Error(message))).toBe('tick_size_change');
     for (const message of ['maker_source:validated_backdated_delta', 'operating:Error: maker_source:validated_backdated_delta:'])
       expect(operatingUnavailableReason(Error(message))).toBe('backdated_delta');
+    for (const message of ['maker_source:validated_rest_tick_mismatch', 'operating:Error: maker_source:validated_rest_tick_mismatch:'])
+      expect(operatingUnavailableReason(Error(message))).toBe('rest_tick_mismatch');
     for (const cause of [
       Error('maker_operating:source_metadata:OBSERVED_MARKET_VOLUME_AND_LIQUIDITY,KNOWN_FEE_BOUND'),
       Error('operating:Error: maker_source:validated_tick_size_change:archive verification failed'),
@@ -197,6 +206,9 @@ describe('ordinary continuous operating integration, authored offline inputs onl
       Error('maker_source:tick_size_change'), Error('unsupported maker_source:validated_tick_size_change'),
       Error('operating:Error: maker_source:validated_backdated_delta:archive verification failed'),
       Error('maker_source:backdated_delta_mixed_frame'), Error('maker_source:backdated_delta'),
+      Error('maker_source:book_market_limits'), Error('unsupported maker_source:validated_rest_tick_mismatch'),
+      Error('operating:Error: maker_source:validated_rest_tick_mismatch:archive verification failed'),
+      'maker_source:validated_rest_tick_mismatch', { message: 'maker_source:validated_rest_tick_mismatch' },
       Error('maker_source:ambiguous_repeated_delta_level'),
       Error('maker_operating:original_market_not_eligible'),
       'maker_operating:original_market_not_eligible', { message: 'maker_source:validated_tick_size_change' },
@@ -389,6 +401,39 @@ describe('ordinary continuous operating integration, authored offline inputs onl
     const fresh = JSON.parse(readFileSync(quotes.find(q => q.epoch === 2).evidence, 'utf8'));
     expect(old.snapshot.contract.book.tick).toBe('0.01'); expect(fresh.snapshot.contract.book.tick).toBe('0.001');
     expect(fresh.samples.records).toBeGreaterThanOrEqual(13); expect(state.status).toBe('OFFLINE_FINISHED');
+    expect(state.virtualCashUSDC).toBe('100'); expect(state.pendingLiabilityNumerator).toBe('0');
+  });
+  it('opens no socket or quote on REST tick disagreement and quotes only after fresh matching metadata and history', async () => {
+    const f = setup({ restTickMismatchAttempts: 1 }); vi.spyOn(Date, 'now').mockImplementation(() => f.clock().utc);
+    const state = await f.run(), log = events(f.out);
+    expect(OPERATING_PROTOCOL.schema).toBe('ORDINARY_PAPER_MAKER_OPERATING_V6');
+    expect(f.captures.map(c => c.attempt)).toEqual([1, 2]); expect(f.captures.map(c => c.streamCalls)).toEqual([0, 1]);
+    expect(f.captures.every(c => c.calls.join(',') === 'metadata,market,book,fee' && c.settled)).toBe(true);
+    expect(f.captures[1]!.startedUtc - f.captures[0]!.startedUtc).toBeGreaterThanOrEqual(2000);
+    const fault = log.find(e => e.kind === 'SOURCE_ATTEMPT_FAULT');
+    expect(fault.error).toBe('Error: maker_source:validated_rest_tick_mismatch');
+    expect(log.find(e => e.kind === 'FRESH_RESYNC_GAP').reason).toBe('rest_tick_mismatch');
+    const quotes = log.filter(e => e.kind === 'PAPER_QUOTE'); expect(quotes.length).toBeGreaterThan(0);
+    expect(quotes.every(q => q.epoch === 2)).toBe(true);
+    const first = JSON.parse(readFileSync(quotes[0].evidence, 'utf8'));
+    expect(first.snapshot.contract.book.tick).toBe('0.001'); expect(first.samples.records).toBeGreaterThanOrEqual(13);
+    expect(state.status).toBe('OFFLINE_FINISHED'); expect(state.virtualCashUSDC).toBe('100');
+    expect(state.activeOrders).toBe(0); expect(state.pendingLiabilityNumerator).toBe('0'); expect(state.fills).toBe(0);
+  });
+  it('consumes at most the same three attempts for persistent REST tick disagreement without any socket or quote', async () => {
+    const f = setup({ restTickMismatchAttempts: 3 }); vi.spyOn(Date, 'now').mockImplementation(() => f.clock().utc);
+    const state = await f.run(); expect(f.captures.map(c => c.attempt)).toEqual([1, 2, 3]);
+    expect(f.captures.map(c => c.streamCalls)).toEqual([0, 0, 0]); expect(state.totalQuotes).toBe(0);
+    expect(f.captures[2]!.startedUtc - f.captures[1]!.startedUtc).toBeGreaterThanOrEqual(10000);
+    expect(state.status).toBe('OFFLINE_FINISHED'); expect(state.attempt).toBe(3); expect(state.virtualCashUSDC).toBe('100');
+    await f.run(); expect(f.captures).toHaveLength(3); expect(state.activeOrders).toBe(0);
+  });
+  it('keeps REST tick disagreement plus contradictory risk metadata fatal without retry', async () => {
+    const f = setup({ restTickMismatchAttempts: 1, restTickMismatchNegRisk: true });
+    const state = await f.run(); expect(f.captures).toHaveLength(1); expect(f.captures[0]!.streamCalls).toBe(0);
+    expect(state.status).toBe('STOPPED'); expect(state.stopReason).toBe('source_correctness_fault');
+    expect(state.lastSourceFault).toBe('Error: maker_source:book_market_limits'); expect(state.totalQuotes).toBe(0);
+    expect(events(f.out).some(e => e.kind === 'FRESH_RESYNC_GAP')).toBe(false);
     expect(state.virtualCashUSDC).toBe('100'); expect(state.pendingLiabilityNumerator).toBe('0');
   });
   it('does not apply a validated backdated singleton and quotes only after bounded fresh resync', async () => {

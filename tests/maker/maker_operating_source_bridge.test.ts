@@ -61,6 +61,44 @@ function comparePrefixes(stream: BridgeStreamItem[]) {
 }
 
 describe("incremental original-token observation state", () => {
+  function restMismatch() {
+    const f = fixture(), book = JSON.parse(f.clobBook.raw);
+    book.tick_size = "0.001"; book.bids[1].price = "0.471";
+    f.clobBook.raw = JSON.stringify(book); return f;
+  }
+  it("rejects a validated REST tick disagreement without changing receipts or supplying accepted terms", () => {
+    const f = restMismatch(), before = JSON.stringify(f);
+    expect(() => deriveMakerStartupInputs(f)).toThrow(/^maker_source:book_market_limits$/);
+    expect(() => createOperatingSourceState(f)).toThrow(/^maker_source:validated_rest_tick_mismatch$/);
+    expect(JSON.stringify(f)).toBe(before);
+  });
+  it.each([
+    ["wrong condition", "book_identity", (f: MakerStartupSourceInput, b: any) => { b.market = "0x" + "b".repeat(64); }],
+    ["wrong token", "book_identity", (f: MakerStartupSourceInput, b: any) => { b.asset_id = "999"; }],
+    ["wrong version", "unsupported_book_version", (f: MakerStartupSourceInput, b: any) => { b.version = "v2"; }],
+    ["unsupported tick", "book_market_limits", (f: MakerStartupSourceInput, b: any) => { b.tick_size = "0.0005"; b.bids[1].price = "0.471"; }],
+    ["negative risk", "book_market_limits", (f: MakerStartupSourceInput, b: any) => { b.neg_risk = true; }],
+    ["zero minimum", "book_market_limits", (f: MakerStartupSourceInput, b: any) => { b.min_order_size = "0"; }],
+    ["conflicting minimum", "book_market_limits", (f: MakerStartupSourceInput, b: any) => { b.min_order_size = "6"; }],
+    ["future venue time", "future_venue_time", (f: MakerStartupSourceInput, b: any) => { b.timestamp = String(start + 11); }],
+    ["missing hash", "string_required", (f: MakerStartupSourceInput, b: any) => { delete b.hash; }],
+    ["malformed side", "book_side_schema", (f: MakerStartupSourceInput, b: any) => { b.asks = null; }],
+    ["empty side", "rest_tick_mismatch_snapshot", (f: MakerStartupSourceInput, b: any) => { b.asks = []; }],
+    ["off-grid level", "price_grid", (f: MakerStartupSourceInput, b: any) => { b.asks[0].price = "0.5401"; }],
+    ["duplicate level", "duplicate_or_empty_level", (f: MakerStartupSourceInput, b: any) => { b.bids.push(b.bids[0]); }],
+    ["crossed book", "crossed_book", (f: MakerStartupSourceInput, b: any) => { b.bids[1].price = "0.541"; }],
+    ["invalid fee", "fee_rate_schema", (f: MakerStartupSourceInput) => { f.tokenFee!.raw = '{"base_fee":true}'; }],
+    ["invalid base fee", "market_base_fee", (f: MakerStartupSourceInput) => {
+      const m = JSON.parse(f.clobMarket.raw); m.maker_base_fee = -1; f.clobMarket.raw = JSON.stringify(m);
+    }],
+    ["fee after decision", "causal_clocks", (f: MakerStartupSourceInput) => { f.tokenFee!.at = at(13); }],
+    ["metadata tick disagreement", "tick_or_minimum", (f: MakerStartupSourceInput) => {
+      const m = JSON.parse(f.clobMarket.raw); m.minimum_tick_size = 0.1; f.clobMarket.raw = JSON.stringify(m);
+    }],
+  ] as const)("keeps REST tick disagreement plus %s fatal", (_label, reason, mutate) => {
+    const f = restMismatch(), b = JSON.parse(f.clobBook.raw); mutate(f, b); f.clobBook.raw = JSON.stringify(b);
+    expect(() => createOperatingSourceState(f)).toThrow(new RegExp("^maker_source:" + reason + "$"));
+  });
   const sibling = bid({asset_id:"999",side:"SELL",price:"0.53",best_bid:"0.46",best_ask:"0.53"});
   const stale = (changes = [bid(),sibling], extra: Record<string,unknown> = {}) => ({
     event_type:"price_change",market:condition,timestamp:String(start+49),price_changes:changes,...extra,
@@ -296,6 +334,30 @@ describe("incremental original-token observation state", () => {
 
 const v7 = join(process.cwd(), "reports/evidence/maker-startup-codex-20261123-v7-reanchor");
 const v3 = join(process.cwd(), "reports/evidence/maker-operating-owner28-20261123-v3/epoch-000005/source");
+const v5tick = join(process.cwd(), "reports/evidence/maker-operating-owner28-20261123-v5/epoch-000112/source");
+it.skipIf(!existsSync(join(v5tick,"ledger.json")))("classifies the exact retained V5 REST tick mismatch without accepting its book or rewriting evidence", async () => {
+  const {selectCurrentBtcMarket} = await import("../../scripts/research/maker_paper_startup");
+  const pinned = {
+    metadata: "88cc85e93cd8e28177af66ec6cd3c9a5a58ada170b0d522a0bfd9b7a31f89f69",
+    market: "f27bb82546b1dfae393691c86dc2831a5b1fdd4a4dc0be6759588e401035277a",
+    book: "7f1d3a5ae87000ad717ee2a71b0677821febfada7e309365aa855fab1cfd0a89",
+    fee: "72f0f488905219fa9b2f2c5374dfbf9e83345b1fa38826015b15119ac221a079",
+  };
+  const ledger = JSON.parse(readFileSync(join(v5tick,"ledger.json"),"utf8"));
+  expect(ledger.wsMessages).toBe(0); expect(ledger.bodyBytes).toBe(12512);
+  const get = (name: keyof typeof pinned) => {
+    const receipt = ledger.httpProofs.find((h: {http: string}) => h.http === name);
+    const raw = readFileSync(join(v5tick,"http",name + ".bin"),"utf8");
+    expect(hash(raw)).toBe(pinned[name]); expect(receipt.sha256).toBe(pinned[name]);
+    return {raw,at:receipt.at,url:receipt.url};
+  };
+  const gamma = get("metadata"), tokenFee = get("fee"), selection = selectCurrentBtcMarket(gamma);
+  const input = {gamma,selection,tokenFee,clobMarket:get("market"),clobBook:get("book"),decision:tokenFee.at,
+    originalLabel:selection.selected!.outcomes[0]!.label,topKLevels:200};
+  expect(() => deriveMakerStartupInputs({...input,stream:[]})).toThrow(/^maker_source:book_market_limits$/);
+  expect(() => createOperatingSourceState(input)).toThrow(/^maker_source:validated_rest_tick_mismatch$/);
+  expect(hash(input.clobBook.raw)).toBe(pinned.book);
+});
 it.skipIf(!existsSync(join(v3,"ledger.json")))("classifies the retained 11ms V3 stale delta without applying it", async () => {
   const {selectCurrentBtcMarket} = await import("../../scripts/research/maker_paper_startup");
   const read = (name: string) => readFileSync(join(v3,name),"utf8");
