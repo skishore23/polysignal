@@ -173,3 +173,13 @@ reconcile one virtual bank at stop, restart, rollover and reviewed version carry
 Never reuse old frozen2/6/startup results as new admissions or reward evidence.
 RL-Exp restaurant and archived MEV environments do not define maker rewards.
 A future learning/discovery claim still requires its separate scientific gates.
+
+## User-stream confirmation and evidence
+
+Entry: `apps/worker/src/execution/userWsReconciler.ts`; regressions:
+`tests/execution/user_ws_reconciler.test.ts`. Parsed receipts retain observed clocks,
+status/allocation identity and incomplete coverage. Project only CONFIRMED identified
+allocations atomically and idempotently; cumulative matches are not settled fills.
+Legacy unverified counters and early trades without a local order are quarantined
+or deferred, without invented replay. The mirror is not a complete account/fee
+ledger and this repair does not activate authenticated or live execution.
