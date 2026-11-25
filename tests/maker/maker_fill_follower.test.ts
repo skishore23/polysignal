@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import {syncBuiltinESMExports} from 'node:module';
 import {afterEach,describe,it,expect,vi} from 'vitest';
 import Database from 'better-sqlite3';
 import {EventEmitter} from 'node:events';
@@ -71,6 +73,37 @@ async function standingFixture(version:'v1'|'v2'='v1'){
   else{expect(argv[1]).toBe(verifier);if(fail==='verifier')return 1;writeFileSync(path.join(output,'verification.json'),json({decision:'VERIFIED_OWN_HELD_PAYOUT_REFRESH',inputSha256:hash(readFileSync(inputFile)),policySha256:f.a.standingPayoutRefresh!.sha256,resultSha256:hash(readFileSync(path.join(output,'result.json')))}));}return 0;
  };return {...f,command,calls:()=>calls};
 }
+describe('fresh full report publication projection, authored sources only',()=>{
+ it('publishes identical complete UTF8 bytes/state/SQL while eliminating the fresh full-report parse',async()=>{
+  const f=await fixture('warm'),epoch=path.join(f.source,'epoch-000002'),originalStringify=JSON.stringify;
+  const stringify=vi.spyOn(JSON,'stringify').mockImplementation(((value:any,replacer:any,space:any)=>{
+   if(value?.schema==='CONSERVING_PAPER_EPOCH_RESULT_V1'&&value.epoch===epoch&&'wireFrameCount'in value)value={...value,authoredUnicode:'π❄️',resources:{cpuMicroseconds:{user:7,system:3},wallMilliseconds:11,nestedInHostReceipt:true}};
+   return originalStringify(value,replacer,space);
+  }) as typeof JSON.stringify);
+  const parse=vi.spyOn(JSON,'parse');
+  const fast=await runPaperFollower(f.admissionFile,{maxCycles:1}),fastOutput=f.output,file=path.join(fastOutput,'epoch-000002.json'),wire=readFileSync(file,'utf8');
+  expect(parse.mock.calls.filter(c=>c[0]===wire)).toHaveLength(0);
+  const full=JSON.parse(wire);expect(full.fills.length).toBeGreaterThan(0);expect(full.authoredUnicode).toBe('π❄️');
+  const tables=['shadow_orders','shadow_fills','accounting_events','paper_execution_account','paper_execution_positions','paper_execution_queues','paper_execution_orders','paper_execution_trades','paper_execution_allocations','paper_execution_settlements','paper_replay_cursor'];
+  const readState=(dir:string)=>{const db=new Database(path.join(dir,'paper.sqlite'),{readonly:true});try{return Object.fromEntries(tables.map(t=>[t,db.prepare('SELECT * FROM '+t+' ORDER BY rowid').all()]))}finally{db.close()}};
+  const fastSQL=readState(fastOutput);
+  f.a.outputDirectory=path.join(f.root,'account-baseline-hook');f.persist();parse.mockClear();
+  const slow=await runPaperFollower(f.admissionFile,{maxCycles:1,afterReportPublished(){}}),slowFile=path.join(f.a.outputDirectory,'epoch-000002.json'),slowWire=readFileSync(slowFile,'utf8');
+  expect(parse.mock.calls.filter(c=>c[0]===slowWire)).toHaveLength(1);expect(slowWire).toBe(wire);expect(readState(f.a.outputDirectory)).toEqual(fastSQL);
+  for(const key of ['cashUSDC','heldShares','reservedBuyUSDC','reservedSellShares','lastModeledEpoch','complete','modelNetPnlUSDC','modeledFills'])expect(slow[key]).toEqual(fast[key]);
+  expect(hash(readFileSync(file))).toBe(hash(readFileSync(slowFile)));for(const [dir,report]of [[fastOutput,file],[f.a.outputDirectory,slowFile]]){const db=new Database(path.join(dir!,'paper.sqlite'),{readonly:true});try{expect((db.prepare('SELECT result_sha FROM paper_consumed_epochs WHERE epoch=2').get() as any).result_sha).toBe(hash(readFileSync(report!)))}finally{db.close()}}parse.mockRestore();stringify.mockRestore();
+ });
+ it('retains baseline post-hook valid JSON mutation/hash behavior rather than governing state from the unmodified in-memory result',async()=>{
+  const f=await fixture();let altered='';await runPaperFollower(f.admissionFile,{maxCycles:1,afterReportPublished(){const file=path.join(f.output,'epoch-000002.json'),raw=readFileSync(file,'utf8');altered=raw.replace('98.000000000000000000','97.000000000000000000');expect(altered.length).toBe(raw.length);writeFileSync(file,altered)}});
+  const db=new Database(path.join(f.output,'paper.sqlite'),{readonly:true});try{const consumed=db.prepare('SELECT result_sha FROM paper_consumed_epochs WHERE epoch=2').get() as any;expect(consumed.result_sha).toBe(hash(altered));expect((db.prepare('SELECT cash FROM paper_execution_account').get() as any).cash).toBe('98000000000000000000')}finally{db.close()}
+ });
+ it.each(['same-length-json','symlink'] as const)('refuses fresh no-hook %s replacement before inserting consumed custody',async kind=>{
+  const f=await fixture(),target=path.join(f.output,'epoch-000002.json'),originalLink=fs.linkSync;
+  const link=vi.spyOn(fs,'linkSync').mockImplementation(((from:any,to:any)=>{originalLink(from,to);if(String(to)===target){const raw=readFileSync(target,'utf8');if(kind==='same-length-json'){const changed=raw.replace('98.000000000000000000','97.000000000000000000');expect(changed.length).toBe(raw.length);writeFileSync(target,changed)}else{const other=path.join(f.root,'replacement.json');writeFileSync(other,raw);fs.unlinkSync(target);symlinkSync(other,target)}}}) as typeof fs.linkSync);syncBuiltinESMExports();
+  try{await expect(runPaperFollower(f.admissionFile,{maxCycles:1})).rejects.toThrow(kind==='symlink'?'published_file_identity':'fresh_report_publication_changed')}finally{link.mockRestore();syncBuiltinESMExports()}
+  const db=new Database(path.join(f.output,'paper.sqlite'),{readonly:true});try{expect((db.prepare('SELECT count(*) n FROM paper_consumed_epochs WHERE epoch=2').get() as any).n).toBe(0);expect((db.prepare('SELECT cash FROM paper_execution_account').get() as any).cash).toBe('98000000000000000000')}finally{db.close()}
+ });
+});
 describe('prospective follower V2 custody and account driver, authored sources only',()=>{
  it('requires an actual matching fd inode and canonical output before copying any bank',async()=>{
   const f=await fixture();const wrong=openSync(path.join(f.root,'other.lock'),'a+');fds.push(wrong);process.env.PAPER_FILL_LOCK_FD=String(wrong);

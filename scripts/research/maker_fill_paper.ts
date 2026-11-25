@@ -27,6 +27,8 @@ export function hashFileSync(file:string){const fd=openSync(file,'r');try{const 
 export function retainedResultProjection(value:any){if(!value?.terminal)return {schema:value?.schema,epoch:value?.epoch};const snapshot=value.terminal.snapshot,accounting=value.terminal.accounting;
  return {schema:value.schema,epoch:value.epoch,terminal:{snapshot:snapshot?{cashUSDC:snapshot.cashUSDC,shares:structuredClone(snapshot.shares),reservedBuyUSDC:snapshot.reservedBuyUSDC,reservedSellShares:structuredClone(snapshot.reservedSellShares)}:undefined,accounting:accounting?{complete:accounting.complete,netPnl:accounting.netPnl,valuationTs:accounting.valuationTs}:undefined}};
 }
+/** Match the projection of the actual JSON wire without reparsing the full report. */
+export function publishedResultProjection(value:any){return retainedResultProjection(JSON.parse(JSON.stringify(retainedResultProjection(value))));}
 function retainedApplicationProjection(value:any){return value?{...retainedResultProjection(value),registry:structuredClone(value.registry),policy:structuredClone(value.policy),at:structuredClone(value.at),file:value.file}:null;}
 const save = (p: string, v: unknown) => writeFileSync(p, JSON.stringify(v, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
 function need(v: unknown, why: string): asserts v { if (!v) throw Error('fill_paper:' + why); }
@@ -409,8 +411,8 @@ function regularPin(pin:FilePin){need(pin&&typeof pin.path==='string'&&/^[a-f0-9
 function verifyPin(pin:FilePin){need(pin&&typeof pin.path==='string'&&/^[a-f0-9]{64}$/.test(pin.sha256),'file_pin');need(realpathSync(pin.path)===path.resolve(pin.path)&&lstatSync(pin.path).isFile()&&!lstatSync(pin.path).isSymbolicLink(),'file_pin_identity');need(hashFileSync(pin.path)===pin.sha256,'file_pin_changed:'+pin.path);}
 function syncDirectory(dir:string){const fd=openSync(dir,'r');try{fsyncSync(fd)}finally{closeSync(fd)}}
 const atomic=(file:string,value:unknown)=>{const tmp=file+'.'+randomUUID()+'.tmp';const fd=openSync(tmp,'wx',0o600);try{writeFileSync(fd,JSON.stringify(value,null,2)+'\n');fsyncSync(fd)}finally{closeSync(fd)}renameSync(tmp,file);syncDirectory(path.dirname(file));};
-function immutable(file:string,value:unknown){const tmp=file+'.'+randomUUID()+'.publishing';const fd=openSync(tmp,'wx',0o600);try{writeFileSync(fd,JSON.stringify(value,null,2)+'\n');fsyncSync(fd)}finally{closeSync(fd)}
-  try{linkSync(tmp,file);syncDirectory(path.dirname(file));}finally{unlinkSync(tmp);}syncDirectory(path.dirname(file));}
+function immutable(file:string,value:unknown,captureWireDigest=false){const tmp=file+'.'+randomUUID()+'.publishing';const fd=openSync(tmp,'wx',0o600);let wireDigest:string|undefined;try{const wire=JSON.stringify(value,null,2)+'\n';writeFileSync(fd,wire);if(captureWireDigest)wireDigest=hash(wire);fsyncSync(fd)}finally{closeSync(fd)}
+  try{linkSync(tmp,file);syncDirectory(path.dirname(file));}finally{unlinkSync(tmp);}syncDirectory(path.dirname(file));return wireDigest;}
 function ownedJSON(file:string){need(lstatSync(file).isFile()&&!lstatSync(file).isSymbolicLink()&&realpathSync(file)===file,'published_file_identity');return JSON.parse(readFileSync(file,'utf8'));}
 export function verifyFollowerKernelLock(outputDirectory:string){
   const allowed=path.join(ROOT,'reports/evidence'),resolved=path.resolve(outputDirectory);
@@ -727,10 +729,14 @@ export async function runPaperFollower(admissionFile:string,dev?:{maxCycles?:num
        else{disposition='MODELLED';state('REPLAYING_CLOSED_SOURCE');dev?.beforeReplay?.(n);result=await replayPaperEpoch(epoch,db,config,logger,{afterCommit:state=>dev?.afterReplayCommit?.(n,state)});}
        result.sourceClockOrigins=db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_execution_clock_origins'").get()?db.prepare('SELECT payload FROM paper_execution_clock_origins ORDER BY sequence').all().map((r:any)=>JSON.parse(r.payload)):[];
        verifyCode();need(hashFileSync(summaryFile)===sourceSha,'closed_source_mutated');
-       if(existsSync(report)){const original=ownedJSON(report);need(stableJSON(economicProjection(original))===stableJSON(economicProjection(result)),'existing_epoch_projection_conflict');}
-       else immutable(report,result);
-       dev?.afterReportPublished?.(n);db.prepare('INSERT INTO paper_consumed_epochs VALUES(?,?,?,?,?)').run(n,sourceSha,report,hashFileSync(report),disposition);
-       if(disposition==='MODELLED'){lastResult=retainedResultProjection(ownedJSON(report));lastModeledEpoch=n;lastResultPath=report;}
+       const existingReport=existsSync(report),freshProjection=disposition==='MODELLED'&&!dev?.afterReportPublished&&!existingReport;let intendedWireDigest:string|undefined;
+       if(existingReport){const original=ownedJSON(report);need(stableJSON(economicProjection(original))===stableJSON(economicProjection(result)),'existing_epoch_projection_conflict');}
+       else intendedWireDigest=immutable(report,result,freshProjection);
+       dev?.afterReportPublished?.(n);
+       if(freshProjection)need(lstatSync(report).isFile()&&!lstatSync(report).isSymbolicLink()&&realpathSync(report)===report,'published_file_identity');
+       const publishedDigest=hashFileSync(report);if(freshProjection)need(publishedDigest===intendedWireDigest,'fresh_report_publication_changed');
+       db.prepare('INSERT INTO paper_consumed_epochs VALUES(?,?,?,?,?)').run(n,sourceSha,report,publishedDigest,disposition);
+       if(disposition==='MODELLED'){lastResult=freshProjection?publishedResultProjection(result):retainedResultProjection(ownedJSON(report));lastModeledEpoch=n;lastResultPath=report;}
        lastClosedEpoch=n;lastReceipt=report;lastDisposition=disposition;
        state(disposition==='MODELLED'?'COMPLETED_EPOCH':'SKIPPED_MODEL_SOURCE_INELIGIBLE',{lastDisposition:disposition,lastClosedEpoch:n,lastReceipt:report,sourceBoundary:result.sourceBoundary??null});advanced=true;expected=n+1;
        if(a.standingPayoutRefresh&&!stopping)await refreshHeldPayouts(db,a,dev?.payoutClock?.()??Date.now(),dev?.runPayoutCommand);
