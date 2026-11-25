@@ -239,3 +239,20 @@ its retained boundary snapshot survives a crash before first new-epoch
 consumption and later trades. Tests: maker_fill_print_applicability,
 maker_fill_follower, paper_fill_settlement and paper_fill_source_origin.
 These are engineering/counterfactual results, not actual execution or alpha.
+
+
+## V4 standing payout and closed-prefix handoff
+
+In `maker_fill_paper.ts`, `closedPrefixCheckpoint` exports a quiescent read-only
+account/table digest receipt. The carry requires its independent review, exact
+closed database, last consumed +1 and actual older modeled result identity.
+Standing refresh writes immutable own-held checkpoints/raw identity triples,
+executes the pinned collector/verifier and preserves PREPARED attempts before
+requests. Restart reconciles orphan raw/result denial evidence before access;
+source quarantine, pending cooldown and oldest-first selection survive carry.
+`applyStandingPayouts` commits canonical settlement and application custody in
+one transaction; receipt time gates funding. Tests in maker_fill_follower and
+maker_fill_payout_cli include real production Python entries under an authored
+socket-denying harness. Legacy allocation/source tests and strict types remain.
+Never relabel pending payout, unsupported quantity, unknown invoices or actual
+redemption gas as zero. Compact state links exact refresh evidence and reasons.

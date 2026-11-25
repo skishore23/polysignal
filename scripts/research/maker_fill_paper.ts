@@ -1,5 +1,6 @@
 /** Source-bound causal paper replay. No gateway, source subscription, or forced fills. */
 import Database from 'better-sqlite3';
+import {spawn} from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, constants, copyFileSync, createReadStream, existsSync, fstatSync, fsyncSync, lstatSync, linkSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, statfsSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
@@ -375,18 +376,20 @@ export async function runFrozenPaperReplay(admissionFile: string) {
 
 type FilePin = {path:string;sha256:string};
 export type IncompleteFollowerCheckpoint = {mode:'INCOMPLETE_EPOCH';receipt:FilePin;resumeEpoch:number;lastModeledEpoch:number;resumeSource:{summary:FilePin;ledger:FilePin}};
-export type FollowerCarry = {database:FilePin;result:FilePin;review:FilePin;lastEpoch:number;checkpoint?:IncompleteFollowerCheckpoint};
+export type ClosedPrefixFollowerCheckpoint = {mode:'CLOSED_PREFIX';receipt:FilePin;lastModeledEpoch:number};
+export type FollowerCarry = {database:FilePin;result:FilePin;review:FilePin;lastEpoch:number;checkpoint?:IncompleteFollowerCheckpoint|ClosedPrefixFollowerCheckpoint};
 export type FollowerSourceCutover = {afterEpoch:number;sourceRoot:string;sourceAdmission:FilePin};
 export type FollowerAdmission = {schema:'CONSERVING_PAPER_FOLLOWER_ADMISSION_V2';protocolSha256:string;
   inputMode:'CLOSED_CAPTURE_FOLLOWER'|'AUTHORED_OFFLINE_FIXTURE';codeSha256:Record<string,string>;
-  sourceRoot:string;firstEpoch:number;sourceAdmission:FilePin;carryFrom:FollowerCarry;sourceCutover?:FollowerSourceCutover;payoutRegistry?:FilePin;
+  sourceRoot:string;firstEpoch:number;sourceAdmission:FilePin;carryFrom:FollowerCarry;sourceCutover?:FollowerSourceCutover;payoutRegistry?:FilePin;standingPayoutRefresh?:FilePin;
   outputDirectory:string;reviewFile:string;reviewSha256:string};
-export const FOLLOWER_PROTOCOL={schema:'CONSERVING_PAPER_FOLLOWER_DRIVER_V3',paper:FILL_PROTOCOL,
+export const FOLLOWER_PROTOCOL={schema:'CONSERVING_PAPER_FOLLOWER_DRIVER_V4',paper:FILL_PROTOCOL,
   account:'mandatory independently checked closed DB: terminal account or explicitly reviewed incomplete-epoch checkpoint; copy once, preserve exact cash/holdings/orders/reservations/cursor/RNG, no refund or reset',
   sourceCutover:'optional single pinned epoch boundary; consume every old epoch first, no active orders at origin change, persist raw new process mono origin with nondecreasing UTC; no clock offsets',
   reports:'immutable per-epoch receipts, restart compares complete source/economic projection excluding measured resources only',
   payoutCustody:'boundary application JSON/SHA and exact canonical prefix commit atomically with settlement; warm restart verifies retained boundary evidence and never revalues it from current funds',
   selection:'all ascending closed captures from last carried epoch+1; explicit structural-ineligible receipts are not rewards',
+  standingValuation:'Optional separately admitted own-held-token source refresh, >=300000ms pending polls, independently verified raw result, permanent finalized certificates, no fund effect on unavailable/unsupported; apply whole holdings only at later source-epoch receipt with zero obligations',
   waiting:'retain last source-as-of account/valuation, incomplete PnL remains null',sourceCaptureDuplicated:false} as const;
 function regularPin(pin:FilePin){need(pin&&typeof pin.path==='string'&&/^[a-f0-9]{64}$/.test(pin.sha256),'file_pin');
   need(realpathSync(pin.path)===path.resolve(pin.path)&&lstatSync(pin.path).isFile()&&!lstatSync(pin.path).isSymbolicLink(),'file_pin_identity');
@@ -451,21 +454,125 @@ function checkedPayoutApplication(db:Database.Database,registry:FilePin,at?:Pape
   const prefix=applied.canonicalPrefix;need(Array.isArray(prefix)&&prefix.length>0&&Number.isSafeInteger(prefix[prefix.length-1].id),'payout_application_canonical_prefix');
   need(stableJSON(db.prepare('SELECT * FROM accounting_events WHERE id<=? ORDER BY id').all(prefix[prefix.length-1].id))===stableJSON(prefix),'payout_application_canonical_prefix');return applied;
 }
+type PayoutCommand=(argv:string[],deadline:number,log:string)=>Promise<number>;
+function standingPolicy(pin:FilePin,a?:FollowerAdmission){const p=JSON.parse(regularPin(pin).toString());
+ need(p.schema==='PAPER_OWN_HELD_PAYOUT_REFRESH_POLICY_V1'&&p.enabled===true&&Number.isSafeInteger(p.minIntervalMs)&&p.minIntervalMs>=300000&&Number.isSafeInteger(p.maxWallMs)&&p.maxWallMs>0&&p.maxPositionsPerBatch===10&&p.maxRequestsPerBatch===60,'standing_payout_policy');
+ need(stableJSON(p.allowedOrigins)===stableJSON(['https://polygon-bor-rpc.publicnode.com'])&&p.requestTimeoutSeconds===12&&p.maxResponseBodyBytes===1048576,'standing_payout_source_scope');
+ for(const file of [p.pythonExecutable,p.collector,p.verifier,...p.helperFilePins])regularPin(file);
+ need((statSync(p.pythonExecutable.path).mode&0o111)!==0&&Array.isArray(p.identitySources)&&p.identitySources.length>0,'standing_payout_runtime');
+ for(const source of p.identitySources){need(realpathSync(source.sourceRoot)===source.sourceRoot,'standing_identity_source');regularPin(source.sourceAdmission);}
+ if(a)need(p.allowedAccountRoots.includes(a.outputDirectory)&&p.allowedOperationReviewFiles.includes(a.reviewFile),'standing_payout_owner_scope');return p;
+}
+function installStandingPayoutTables(db:Database.Database){db.exec(`
+ CREATE TABLE IF NOT EXISTS paper_payout_refresh_quarantine(source_key TEXT PRIMARY KEY,payload_json TEXT NOT NULL);
+ CREATE TRIGGER IF NOT EXISTS paper_payout_refresh_quarantine_update BEFORE UPDATE ON paper_payout_refresh_quarantine BEGIN SELECT RAISE(ABORT,'fill_paper:immutable_payout_quarantine'); END;
+ CREATE TRIGGER IF NOT EXISTS paper_payout_refresh_quarantine_delete BEFORE DELETE ON paper_payout_refresh_quarantine BEGIN SELECT RAISE(ABORT,'fill_paper:immutable_payout_quarantine'); END;
+ CREATE TABLE IF NOT EXISTS paper_payout_refresh_due(token TEXT PRIMARY KEY,condition TEXT NOT NULL,policy_sha TEXT NOT NULL,last_utc INTEGER NOT NULL,status TEXT NOT NULL);
+ CREATE TABLE IF NOT EXISTS paper_payout_refresh_attempts(id TEXT PRIMARY KEY,at_utc INTEGER NOT NULL,payload_json TEXT NOT NULL);
+ CREATE TABLE IF NOT EXISTS paper_payout_refresh_certificates(token TEXT PRIMARY KEY,condition TEXT NOT NULL,payload_json TEXT NOT NULL);
+ CREATE TABLE IF NOT EXISTS paper_payout_refresh_applications(id INTEGER PRIMARY KEY,payload_sha TEXT NOT NULL,payload_json TEXT NOT NULL);
+ CREATE TRIGGER IF NOT EXISTS paper_payout_refresh_certificate_update BEFORE UPDATE ON paper_payout_refresh_certificates BEGIN SELECT RAISE(ABORT,'fill_paper:immutable_payout_certificate'); END;
+ CREATE TRIGGER IF NOT EXISTS paper_payout_refresh_certificate_delete BEFORE DELETE ON paper_payout_refresh_certificates BEGIN SELECT RAISE(ABORT,'fill_paper:immutable_payout_certificate'); END;
+ CREATE TRIGGER IF NOT EXISTS paper_payout_refresh_application_update BEFORE UPDATE ON paper_payout_refresh_applications BEGIN SELECT RAISE(ABORT,'fill_paper:immutable_payout_application'); END;
+ CREATE TRIGGER IF NOT EXISTS paper_payout_refresh_application_delete BEFORE DELETE ON paper_payout_refresh_applications BEGIN SELECT RAISE(ABORT,'fill_paper:immutable_payout_application'); END;`);}
+function filePin(file:string):FilePin{return {path:file,sha256:hash(readFileSync(file))};}
+function payoutIdentity(db:Database.Database,policy:any,token:string,dir:string){
+ const canonical=db.prepare('SELECT t.market_id,t.outcome,m.condition_id,m.slug FROM tokens t JOIN markets m ON m.id=t.market_id WHERE t.id=?').get(token) as any;need(canonical&&/^0x[a-fA-F0-9]{64}$/.test(canonical.condition_id),'payout_identity_canonical_missing');
+ const epochs=db.prepare("SELECT epoch,source_sha FROM paper_consumed_epochs WHERE disposition='MODELLED' ORDER BY epoch DESC").all() as any[];
+ for(const n of epochs)for(const admitted of policy.identitySources){const epoch=path.join(admitted.sourceRoot,'epoch-'+String(n.epoch).padStart(6,'0')),summary=path.join(epoch,'epoch-summary.json');if(!existsSync(summary)||hash(readFileSync(summary))!==n.source_sha)continue;
+  const ledger=ownedJSON(path.join(epoch,'source/ledger.json')),raw=path.join(epoch,'source/http/metadata.bin');if(!existsSync(raw))continue;const original=JSON.parse(readFileSync(raw,'utf8'));if(original.id!==canonical.market_id)continue;
+  const pins:Record<string,FilePin>={};for(const name of ['metadata','market','book']){const file=path.join(epoch,'source/http',name+'.bin'),receipt=ledger.http.reads.find((r:any)=>r.name===name);need(receipt?.status==='COMPLETED'&&receipt.httpStatus===200&&receipt.sha256===filePin(file).sha256,'payout_identity_receipt');pins[name]=filePin(file);regularPin(pins[name]!);}
+  need(stableJSON(ownedJSON(summary).source)===stableJSON(ledger),'payout_identity_ledger');
+  const label=canonical.outcome,labels=typeof original.outcomes==='string'?JSON.parse(original.outcomes):original.outcomes,version=original.version;need(version==='v1'||version==='v2','payout_identity_version');
+  const ids=version==='v1'?(typeof original.clobTokenIds==='string'?JSON.parse(original.clobTokenIds):original.clobTokenIds):original.positionIds;
+  need(original.conditionId===canonical.condition_id&&original.slug===canonical.slug&&Array.isArray(labels)&&Array.isArray(ids)&&labels.indexOf(label)>=0&&ids[labels.indexOf(label)]===token,'payout_identity_original_token');
+  const identity={metadata:pins.metadata,market:pins.market,book:pins.book,token,marketId:canonical.market_id,condition:canonical.condition_id,protocolVersion:version,outcome:label,sourceAdmission:admitted.sourceAdmission};const evidence=path.join(dir,'identity-'+token+'.json');immutable(evidence,identity);return {token,market:canonical.market_id,condition:canonical.condition_id,protocolVersion:version,identityEvidence:filePin(evidence)};
+ }throw Error('fill_paper:payout_identity_original_capture_missing');
+}
+async function payoutCommand(argv:string[],deadline:number,log:string){const fd=openSync(log,'wx',0o600);try{return await new Promise<number>((resolve,reject)=>{
+ const child=spawn(argv[0]!,argv.slice(1),{stdio:['ignore',fd,fd],env:{PATH:process.env.PATH??'',HOME:process.env.HOME??'',PYTHONNOUSERSITE:'1'}});let timedOut=false,kill:ReturnType<typeof setTimeout>|undefined;
+ const timer=setTimeout(()=>{timedOut=true;child.kill('SIGTERM');kill=setTimeout(()=>child.kill('SIGKILL'),2000)},Math.max(1,deadline-performance.now()));
+ child.once('error',error=>{clearTimeout(timer);if(kill)clearTimeout(kill);reject(error)});child.once('close',code=>{clearTimeout(timer);if(kill)clearTimeout(kill);resolve(timedOut?-1:code??-1)});
+ });}finally{fsyncSync(fd);closeSync(fd)}}
+const PAYOUT_SOURCE_KEY='https://polygon-bor-rpc.publicnode.com|137|0x4d97dcd97ec945f40cf65f87097ace5ea0476045';
+function payoutAccessDenied(result:any){return result?.retryDisposition==='ACCESS_DENIED_REQUIRES_REVIEW'||(result?.terminalAccessFailure!=null&&result.terminalAccessFailure!==false)||result?.sourceErrors?.some((e:any)=>e.httpStatus===401||e.httpStatus===403)===true;}
+function embargoFromRetainedAttempt(db:Database.Database,attempt:string,policy:FilePin,now:number){const output=path.join(attempt,'capture');if(!existsSync(output))return false;
+ need(realpathSync(output)===output,'payout_orphan_output_alias');for(const name of readdirSync(output).filter(n=>n==='result.json'||/^rpc-\d{3}\.json$/.test(n))){const file=path.join(output,name);need(statSync(file).size<=7340032,'payout_orphan_receipt_size');const receipt=filePin(file),r=JSON.parse(regularPin(receipt).toString());const rawDenied=r.origin==='https://polygon-bor-rpc.publicnode.com'&&((r.httpStatus===401||r.httpStatus===403)||(typeof r.error==='string'&&/^HTTP Error (401|403):/.test(r.error)));
+  if(rawDenied||payoutAccessDenied(r)){const embargo={schema:'PAPER_PAYOUT_SOURCE_ACCESS_QUARANTINE_V1',sourceKey:PAYOUT_SOURCE_KEY,atUTC:now,attempt,receipt,policy,automaticRetryAllowed:false,basis:'RETAINED_ACCESS_REJECTION_NO_CREDIT',actualRevenue:null};db.prepare('INSERT OR IGNORE INTO paper_payout_refresh_quarantine VALUES(?,?)').run(PAYOUT_SOURCE_KEY,JSON.stringify(embargo));return true;}
+ }return false;
+}
+function reconcilePreparedPayouts(db:Database.Database,now:number){for(const row of db.prepare("SELECT id,payload_json FROM paper_payout_refresh_attempts WHERE json_extract(payload_json,'$.status')='PREPARED'").all() as any[]){const p=JSON.parse(row.payload_json);embargoFromRetainedAttempt(db,row.id,p.policy,now);db.prepare('UPDATE paper_payout_refresh_attempts SET payload_json=? WHERE id=?').run(JSON.stringify({...p,status:'ORPHANED_UNAVAILABLE',reconciledUTC:now,actualRevenue:null}),row.id);}}
+function unfinishedPaperEpoch(db:Database.Database){const last=(db.prepare('SELECT MAX(epoch) n FROM paper_consumed_epochs').get() as any).n??0;return (db.prepare('SELECT epoch FROM paper_replay_cursor').all() as any[]).some(r=>Number(String(r.epoch).slice(-6))>last);}
+export function selectPayoutRefreshPositions(rows:{r:any;due:any;final:boolean}[],now:number,minInterval:number,policySha:string){return rows.filter(({r,final,due})=>BigInt(r.shares)>0n&&!final&&(!due||(now-due.last_utc>=minInterval&&(due.status!=='UNSUPPORTED'||due.policy_sha!==policySha)))).sort((a,b)=>(a.due?.last_utc??-Infinity)-(b.due?.last_utc??-Infinity)||a.r.token.localeCompare(b.r.token)).slice(0,10).map(({r})=>r);}
+function standingPayoutSummary(db:Database.Database){if(!db.prepare("SELECT 1 FROM sqlite_master WHERE name='paper_payout_refresh_attempts'").get())return null;const row=db.prepare('SELECT id,payload_json FROM paper_payout_refresh_attempts ORDER BY at_utc DESC,id DESC LIMIT 1').get() as any,latest=row?JSON.parse(row.payload_json):null;
+ const assets=(db.prepare("SELECT token,shares FROM paper_execution_positions WHERE shares!='0' ORDER BY token").all() as any[]).filter(p=>BigInt(p.shares)>0n).map(p=>{const due=db.prepare('SELECT * FROM paper_payout_refresh_due WHERE token=?').get(p.token) as any,cert=db.prepare('SELECT payload_json FROM paper_payout_refresh_certificates WHERE token=?').get(p.token) as any,observed=cert?JSON.parse(cert.payload_json).item:null,item=[...(latest?.positions??[]),...(latest?.localUnavailable??[])].find((v:any)=>v.token===p.token);return {token:p.token,quantityShares:`${BigInt(p.shares)/SCALE}.${(BigInt(p.shares)%SCALE).toString().padStart(9,'0')}`,status:observed?'FINALIZED_WAITING_FOR_LATER_SOURCE_CLOCK':due?.status??'NOT_ATTEMPTED',lastAttemptUTC:due?.last_utc??null,observedReceiptUTC:observed?.observedReceiptUTC??null,reason:String(item?.reason??item?.error??observed?.reason??'').slice(0,300)||null};});
+ return {lastAttempt:latest?{path:path.join(row.id,'attempt.json'),atUTC:latest.atUTC,status:latest.status,error:String(latest.error??'').slice(0,500)||null,input:latest.input}:null,assets};
+}
+export async function refreshHeldPayouts(db:Database.Database,a:FollowerAdmission,now:number,command:PayoutCommand=payoutCommand){
+ if(!a.standingPayoutRefresh||unfinishedPaperEpoch(db))return;need(Number.isSafeInteger(now)&&now>=0,'payout_refresh_clock');need(!db.inTransaction,'payout_refresh_transaction');const policy=standingPolicy(a.standingPayoutRefresh,a);installStandingPayoutTables(db);
+ reconcilePreparedPayouts(db,now);
+ if(db.prepare('SELECT 1 FROM paper_payout_refresh_quarantine WHERE source_key=?').get(PAYOUT_SOURCE_KEY))return;
+ const held=db.prepare("SELECT token,shares FROM paper_execution_positions WHERE shares!='0' ORDER BY token").all() as any[];
+ const candidates=selectPayoutRefreshPositions(held.map(r=>({r,final:!!db.prepare('SELECT 1 FROM paper_payout_refresh_certificates WHERE token=?').get(r.token),due:db.prepare('SELECT * FROM paper_payout_refresh_due WHERE token=?').get(r.token)})),now,policy.minIntervalMs,a.standingPayoutRefresh.sha256);if(!candidates.length)return;
+ const folder=path.join(a.outputDirectory,'payout-refresh');mkdirSync(folder,{recursive:true,mode:0o700});const dir=path.join(folder,now+'-'+randomUUID());mkdirSync(dir,{mode:0o700});const ownerAdmission=filePin(path.join(a.outputDirectory,'frozen-admission.json'));
+ const checkpoint={schema:'PAPER_OWN_HELD_PAYOUT_CHECKPOINT_V1',asOfUTC:now,ownerAdmissionSha256:ownerAdmission.sha256,account:exactAccount(db),canonicalEventHash:hash(stableJSON(db.prepare('SELECT * FROM accounting_events ORDER BY id').all()))};const checkpointFile=path.join(dir,'account-checkpoint.json');immutable(checkpointFile,checkpoint);
+ const positions:any[]=[],localUnavailable:any[]=[];for(const r of candidates){try{positions.push({...payoutIdentity(db,policy,r.token,dir),quantityShares:`${BigInt(r.shares)/SCALE}.${(BigInt(r.shares)%SCALE).toString().padStart(9,'0')}`})}catch(error){localUnavailable.push({token:r.token,status:'UNAVAILABLE',error:String(error)})}}
+ const input={schema:'PAPER_OWN_HELD_PAYOUT_REFRESH_INPUT_V1',asOfUTC:now,policy:a.standingPayoutRefresh,ownerAdmission,accountCheckpoint:filePin(checkpointFile),accountCheckpointSha256:hash(readFileSync(checkpointFile)),sourceAdmissions:policy.identitySources.map((s:any)=>s.sourceAdmission),positions};const inputFile=path.join(dir,'input.json');immutable(inputFile,input);const output=path.join(dir,'capture');const prepared={schema:'PAPER_OWN_HELD_PAYOUT_REFRESH_ATTEMPT_V1',status:'PREPARED',atUTC:now,policy:a.standingPayoutRefresh,input:filePin(inputFile),positions:candidates.map(r=>r.token),actualRevenue:null};immutable(path.join(dir,'prepared.json'),prepared);
+ db.transaction(()=>{db.prepare('INSERT INTO paper_payout_refresh_attempts VALUES(?,?,?)').run(dir,now,JSON.stringify(prepared));for(const r of candidates)db.prepare('INSERT INTO paper_payout_refresh_due VALUES(?,?,?,?,?) ON CONFLICT(token) DO UPDATE SET policy_sha=excluded.policy_sha,last_utc=excluded.last_utc,status=excluded.status').run(r.token,'',a.standingPayoutRefresh!.sha256,now,'PREPARED')})();
+ let status='UNAVAILABLE',error:string|null=null,resultPin:FilePin|null=null,verificationPin:FilePin|null=null,observed:any[]=[];
+ try{if(positions.length){const deadline=performance.now()+policy.maxWallMs;const argv=(script:FilePin)=>[policy.pythonExecutable.path,script.path,'--input',inputFile,'--output',output,'--policy',a.standingPayoutRefresh!.path];
+   need(await command(argv(policy.collector),deadline,path.join(dir,'collector.log'))===0,'payout_collector_unavailable');standingPolicy(a.standingPayoutRefresh,a);need(await command(argv(policy.verifier),deadline,path.join(dir,'verifier.log'))===0,'payout_verifier_unavailable');standingPolicy(a.standingPayoutRefresh,a);
+   resultPin=filePin(path.join(output,'result.json'));verificationPin=filePin(path.join(output,'verification.json'));const result=JSON.parse(regularPin(resultPin).toString()),verification=JSON.parse(regularPin(verificationPin).toString());
+   need(verification.decision==='VERIFIED_OWN_HELD_PAYOUT_REFRESH'&&verification.inputSha256===filePin(inputFile).sha256&&verification.policySha256===a.standingPayoutRefresh.sha256&&verification.resultSha256===resultPin.sha256,'payout_verification');
+   need(result.schema==='PAPER_OWN_HELD_PAYOUT_REFRESH_RESULT_V1'&&result.inputSha256===filePin(inputFile).sha256&&result.policySha256===a.standingPayoutRefresh.sha256&&Array.isArray(result.positions)&&result.positions.length===positions.length,'payout_result');
+   need(stableJSON(checkpoint.account)===stableJSON(exactAccount(db))&&checkpoint.canonicalEventHash===hash(stableJSON(db.prepare('SELECT * FROM accounting_events ORDER BY id').all())),'payout_account_changed');
+   const seen=new Set<string>();for(const item of result.positions){const original=positions.find(p=>p.token===item.token);need(original&&!seen.has(item.token)&&item.condition===original.condition&&item.market===original.market&&['FINALIZED_BINARY','PENDING','UNAVAILABLE','UNSUPPORTED'].includes(item.status),'payout_result_identity');seen.add(item.token);
+     if(item.status==='FINALIZED_BINARY')need(original.protocolVersion==='v1'&&(item.payout===0||item.payout===1)&&Number.isSafeInteger(item.observedReceiptUTC)&&item.observedReceiptUTC>=now&&item.sourceAssurance==='SINGLE_PROVIDER_ATTESTED','payout_certificate');else need(item.payout===null,'payout_nonfinal_cash');}
+   need(!payoutAccessDenied(result),'payout_access_denied_requires_review');observed=result.positions;status='VERIFIED';db.transaction(()=>{for(const item of observed)if(item.status==='FINALIZED_BINARY')db.prepare('INSERT INTO paper_payout_refresh_certificates VALUES(?,?,?)').run(item.token,item.condition,JSON.stringify({item,input:filePin(inputFile),policy:a.standingPayoutRefresh,result:resultPin,verification:verificationPin}));})();
+  }}catch(failure){error=String(failure);status='UNAVAILABLE';observed=[];}
+ if(existsSync(path.join(output,'result.json'))){try{const rawPin=filePin(path.join(output,'result.json')),raw=JSON.parse(regularPin(rawPin).toString());if(payoutAccessDenied(raw)){const embargo={schema:'PAPER_PAYOUT_SOURCE_ACCESS_QUARANTINE_V1',sourceKey:PAYOUT_SOURCE_KEY,atUTC:now,attempt:dir,result:rawPin,policy:a.standingPayoutRefresh,sourceErrors:raw.sourceErrors??null,terminalAccessFailure:raw.terminalAccessFailure??null,automaticRetryAllowed:false,actualRevenue:null};db.prepare('INSERT OR IGNORE INTO paper_payout_refresh_quarantine VALUES(?,?)').run(PAYOUT_SOURCE_KEY,JSON.stringify(embargo));status='QUARANTINED_ACCESS_DENIED';}}catch(parseError){error=(error??'')+'; access_receipt:'+String(parseError);}}
+ if(embargoFromRetainedAttempt(db,dir,a.standingPayoutRefresh,now))status='QUARANTINED_ACCESS_DENIED';
+ const receipt={schema:'PAPER_OWN_HELD_PAYOUT_REFRESH_ATTEMPT_V1',atUTC:now,status,error,input:filePin(inputFile),result:resultPin,verification:verificationPin,positions:observed,localUnavailable,actualRevenue:null,actualCharges:null};immutable(path.join(dir,'attempt.json'),receipt);
+ db.transaction(()=>{db.prepare('UPDATE paper_payout_refresh_attempts SET payload_json=? WHERE id=?').run(JSON.stringify(receipt),dir);for(const r of candidates){const item=observed.find(p=>p.token===r.token);db.prepare('INSERT INTO paper_payout_refresh_due VALUES(?,?,?,?,?) ON CONFLICT(token) DO UPDATE SET condition=excluded.condition,policy_sha=excluded.policy_sha,last_utc=excluded.last_utc,status=excluded.status').run(r.token,item?.condition??'',a.standingPayoutRefresh!.sha256,now,item?.status??'UNAVAILABLE')}})();
+}
+export function applyStandingPayouts(db:Database.Database,a:FollowerAdmission,at:PaperClock){if(!a.standingPayoutRefresh)return null;standingPolicy(a.standingPayoutRefresh,a);installStandingPayoutTables(db);need(!db.inTransaction,'payout_application_transaction');
+ const ready=(db.prepare('SELECT * FROM paper_payout_refresh_certificates ORDER BY token').all() as any[]).map(r=>JSON.parse(r.payload_json)).filter(c=>c.item.observedReceiptUTC<=at.utc&&BigInt((db.prepare('SELECT shares FROM paper_execution_positions WHERE token=?').get(c.item.token) as any)?.shares??'0')>0n);if(!ready.length)return null;
+ const core=new PaperMakerExecution(db,FILL_POLICY,()=>at);const file=path.join(a.outputDirectory,'payout-refresh','application-'+at.utc+'-'+randomUUID()+'.json');let application:any;
+ db.transaction(()=>{for(const c of ready){const result=JSON.parse(regularPin(c.result).toString()),verification=JSON.parse(regularPin(c.verification).toString());regularPin(c.input);regularPin(c.policy);need(verification.decision==='VERIFIED_OWN_HELD_PAYOUT_REFRESH'&&verification.resultSha256===c.result.sha256&&verification.inputSha256===c.input.sha256&&verification.policySha256===c.policy.sha256&&result.positions.some((p:any)=>stableJSON(p)===stableJSON(c.item)),'cached_payout_certificate');
+   core.settleBinaryHolding({token:c.item.token,market:c.item.market,condition:c.item.condition,payout:c.item.payout,at,observedReceiptUTC:c.item.observedReceiptUTC,registrySha256:hash(stableJSON(c)),sourceResultSha256:c.result.sha256,sourceReviewSha256:c.verification.sha256,costScenario:'paper-zero-redemption-cost-v1'});}
+   application={schema:'PAPER_STANDING_PAYOUT_APPLICATION_V1',at,policy:a.standingPayoutRefresh,certificates:ready,terminal:core.terminalReport({valuationTs:at.utc,asOfReceiptTs:at.utc}),canonicalPrefix:db.prepare('SELECT * FROM accounting_events ORDER BY id').all(),file,costScenario:'paper-zero-redemption-cost-v1',actualGas:null,actualRedemption:null,actualRevenue:null};const payload=JSON.stringify(application);db.prepare('INSERT INTO paper_payout_refresh_applications(payload_sha,payload_json) VALUES(?,?)').run(hash(payload),payload);
+ })();immutable(file,application);return application;
+}
+function latestStandingPayout(db:Database.Database,outputDirectory:string){if(!db.prepare("SELECT 1 FROM sqlite_master WHERE name='paper_payout_refresh_applications'").get())return null;const r=db.prepare('SELECT * FROM paper_payout_refresh_applications ORDER BY id DESC LIMIT 1').get() as any;if(!r)return null;need(hash(r.payload_json)===r.payload_sha,'standing_payout_custody');const p=JSON.parse(r.payload_json),prefix=p.canonicalPrefix;need(stableJSON(db.prepare('SELECT * FROM accounting_events WHERE id<=? ORDER BY id').all(prefix[prefix.length-1].id))===stableJSON(prefix),'standing_payout_prefix');if(existsSync(p.file))need(stableJSON(ownedJSON(p.file))===stableJSON(p),'standing_payout_file');else{need(path.dirname(path.dirname(p.file))===outputDirectory,'standing_payout_historical_file_missing');immutable(p.file,p);}return p;}
+
+/** Pure read-only custody for an already quiescent, fully consumed paper prefix. */
+export function closedPrefixCheckpoint(db:Database.Database){need(!db.inTransaction,'closed_prefix_transaction');const account=exactAccount(db);
+  need(account.reservedBuyUSDC==='0.000000000000000000'&&Object.values(account.reservedSellShares).every(v=>decimal(v)===0n)&&(db.prepare("SELECT COUNT(*) n FROM shadow_orders WHERE status IN ('OPEN','PARTIAL','PENDING')").get() as any).n===0&&(db.prepare("SELECT COUNT(*) n FROM paper_execution_orders WHERE status='ACTIVE'").get() as any).n===0,'closed_prefix_open_orders');
+  const last=db.prepare('SELECT * FROM paper_consumed_epochs ORDER BY epoch DESC LIMIT 1').get() as any,modeled=db.prepare("SELECT * FROM paper_consumed_epochs WHERE disposition='MODELLED' ORDER BY epoch DESC LIMIT 1").get() as any;need(last&&modeled,'closed_prefix_consumption');
+  const cursors=db.prepare('SELECT * FROM paper_replay_cursor ORDER BY epoch').all() as any[];need(cursors.every(c=>/epoch-\d{6}$/.test(c.epoch)&&Number(c.epoch.slice(-6))<=last.epoch),'closed_prefix_incomplete_cursor');
+  const tables:Record<string,{rows:number;sha256:string}>={};for(const table of ['shadow_orders','shadow_fills','accounting_events','paper_execution_account','paper_execution_positions','paper_execution_queues','paper_execution_orders','paper_execution_trades','paper_execution_allocations','paper_execution_terms','paper_execution_watermarks','paper_execution_clock_origins','paper_execution_settlements','paper_replay_cursor','paper_consumed_epochs','paper_replay_payout_application','paper_replay_print_refusals','paper_payout_refresh_due','paper_payout_refresh_attempts','paper_payout_refresh_certificates','paper_payout_refresh_applications','paper_payout_refresh_quarantine']){
+    if(!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))continue;
+    const rows=db.prepare('SELECT * FROM '+table+' ORDER BY rowid').all();tables[table]={rows:rows.length,sha256:hash(stableJSON(rows))};
+  }need(hash(readFileSync(modeled.result_file))===modeled.result_sha,'closed_prefix_result_changed');const sourceEpoch=ownedJSON(modeled.result_file).epoch;need(typeof sourceEpoch==='string'&&path.basename(sourceEpoch)==='epoch-'+String(modeled.epoch).padStart(6,'0'),'closed_prefix_result_lineage');
+  return {schema:'PAPER_FOLLOWER_CLOSED_PREFIX_CHECKPOINT_V1',status:'CLOSED_PREFIX',lastConsumedEpoch:last.epoch,lastModeledEpoch:modeled.epoch,lastModeledResult:{path:modeled.result_file,sha256:modeled.result_sha,sourceEpoch},account,tables};
+}
 function seedFollower(a:FollowerAdmission){
   need(a.carryFrom&&Number.isSafeInteger(a.carryFrom.lastEpoch)&&a.carryFrom.lastEpoch>=1&&a.firstEpoch===a.carryFrom.lastEpoch+1,'follower_carry_lineage');
   const seedRaw=regularPin(a.carryFrom.database),resultRaw=regularPin(a.carryFrom.result),review=JSON.parse(regularPin(a.carryFrom.review).toString());
   const checkpoint=a.carryFrom.checkpoint;
+  const checkpointReceipt:any=checkpoint?JSON.parse(regularPin(checkpoint.receipt).toString()):null;
   const modeledEpoch=checkpoint?.lastModeledEpoch??a.carryFrom.lastEpoch;
-  const result=JSON.parse(resultRaw.toString());need(Number.isSafeInteger(modeledEpoch)&&modeledEpoch>=1&&modeledEpoch<=a.carryFrom.lastEpoch&&result.schema==='CONSERVING_PAPER_EPOCH_RESULT_V1'&&result.epoch===path.join(a.sourceRoot,'epoch-'+String(modeledEpoch).padStart(6,'0')),'follower_carry_result_lineage');
-  need(review.decision===(checkpoint?'APPROVE_PAPER_FOLLOWER_CARRY_FROM_INCOMPLETE_CHECKPOINT':'APPROVE_PAPER_FOLLOWER_CARRY_FROM_CLOSED_ACCOUNT')&&review.databaseClosed===true&&review.lastEpoch===a.carryFrom.lastEpoch&&review.paperProtocolSha256===hash(JSON.stringify(FILL_PROTOCOL))
+  const result=JSON.parse(resultRaw.toString());need(Number.isSafeInteger(modeledEpoch)&&modeledEpoch>=1&&modeledEpoch<=a.carryFrom.lastEpoch&&result.schema==='CONSERVING_PAPER_EPOCH_RESULT_V1'&&result.epoch===(checkpoint?.mode==='CLOSED_PREFIX'?checkpointReceipt?.lastModeledResult?.sourceEpoch:path.join(a.sourceRoot,'epoch-'+String(modeledEpoch).padStart(6,'0'))),'follower_carry_result_lineage');
+  need(review.decision===(checkpoint?(checkpoint.mode==='INCOMPLETE_EPOCH'?'APPROVE_PAPER_FOLLOWER_CARRY_FROM_INCOMPLETE_CHECKPOINT':'APPROVE_PAPER_FOLLOWER_CARRY_FROM_CLOSED_PREFIX'):'APPROVE_PAPER_FOLLOWER_CARRY_FROM_CLOSED_ACCOUNT')&&review.databaseClosed===true&&review.lastEpoch===a.carryFrom.lastEpoch&&review.paperProtocolSha256===hash(JSON.stringify(FILL_PROTOCOL))
     &&stableJSON(review.database)===stableJSON(a.carryFrom.database)&&stableJSON(review.result)===stableJSON(a.carryFrom.result)&&stableJSON(review.checkpoint)===stableJSON(checkpoint),'follower_carry_review');
-  let checkpointReceipt:any=null;
-  if(checkpoint){need(checkpoint.mode==='INCOMPLETE_EPOCH'&&checkpoint.resumeEpoch===a.firstEpoch,'follower_checkpoint_lineage');
+  if(checkpoint){need(['INCOMPLETE_EPOCH','CLOSED_PREFIX'].includes(checkpoint.mode),'follower_checkpoint_lineage');
+    if(checkpoint.mode==='INCOMPLETE_EPOCH'){need(checkpoint.resumeEpoch===a.firstEpoch,'follower_checkpoint_lineage');
     const epoch=path.join(a.sourceRoot,'epoch-'+String(a.firstEpoch).padStart(6,'0'));
     need(checkpoint.resumeSource.summary.path===path.join(epoch,'epoch-summary.json')&&checkpoint.resumeSource.ledger.path===path.join(epoch,'source/ledger.json'),'follower_checkpoint_source');
-    regularPin(checkpoint.resumeSource.summary);regularPin(checkpoint.resumeSource.ledger);checkpointReceipt=JSON.parse(regularPin(checkpoint.receipt).toString());
+    regularPin(checkpoint.resumeSource.summary);regularPin(checkpoint.resumeSource.ledger);
     need(checkpointReceipt.schema==='PAPER_FOLLOWER_RECOVERABLE_FAILURE_V2'&&checkpointReceipt.activeEpoch===a.firstEpoch&&checkpointReceipt.lastModeledEpoch===modeledEpoch&&checkpointReceipt.complete===false
       &&checkpointReceipt.paperCheckpoint?.status==='INCOMPLETE_RECOVERABLE'&&checkpointReceipt.paperCheckpoint.epoch===epoch&&checkpointReceipt.paperCheckpoint.terminalComplete===false,'follower_checkpoint_receipt');
+    }else need(checkpointReceipt.schema==='PAPER_FOLLOWER_CLOSED_PREFIX_CHECKPOINT_V1'&&checkpointReceipt.status==='CLOSED_PREFIX'&&checkpointReceipt.lastConsumedEpoch===a.carryFrom.lastEpoch&&checkpointReceipt.lastModeledEpoch===modeledEpoch&&checkpointReceipt.lastModeledResult?.path===a.carryFrom.result.path&&checkpointReceipt.lastModeledResult.sha256===a.carryFrom.result.sha256&&path.basename(result.epoch)==='epoch-'+String(modeledEpoch).padStart(6,'0'),'follower_checkpoint_receipt');
   }
   for(const suffix of ['-wal','-journal'])need(!existsSync(a.carryFrom.database.path+suffix)||statSync(a.carryFrom.database.path+suffix).size===0,'seed_database_not_closed');
   const file=path.join(a.outputDirectory,'paper.sqlite'),receipt=path.join(a.outputDirectory,'carry-receipt.json');
@@ -480,7 +587,7 @@ function seedFollower(a:FollowerAdmission){
   return {file,result,accountProof,checkpointReceipt,needsAccountProof:!existsSync(accountProof)};
 }
 /** Follows closed captures only. It never starts a source connection or funds a new account. */
-export async function runPaperFollower(admissionFile:string,dev?:{maxCycles?:number;wait?:(ms:number)=>Promise<void>;afterReportPublished?:(epoch:number)=>void;beforeReplay?:(epoch:number)=>void;afterReplayCommit?:(epoch:number,state:{ordinal:number;at:PaperClock;randomState:number})=>void}){
+export async function runPaperFollower(admissionFile:string,dev?:{maxCycles?:number;wait?:(ms:number)=>Promise<void>;afterReportPublished?:(epoch:number)=>void;beforeReplay?:(epoch:number)=>void;payoutClock?:()=>number;runPayoutCommand?:PayoutCommand;afterReplayCommit?:(epoch:number,state:{ordinal:number;at:PaperClock;randomState:number})=>void}){
   const raw=readFileSync(admissionFile),a:FollowerAdmission=JSON.parse(raw.toString());
   need(a.schema==='CONSERVING_PAPER_FOLLOWER_ADMISSION_V2'&&a.protocolSha256===hash(JSON.stringify(FOLLOWER_PROTOCOL)),'follower_protocol');
   need(['CLOSED_CAPTURE_FOLLOWER','AUTHORED_OFFLINE_FIXTURE'].includes(a.inputMode)&&(!dev||a.inputMode==='AUTHORED_OFFLINE_FIXTURE'),'follower_input_mode');
@@ -489,10 +596,11 @@ export async function runPaperFollower(admissionFile:string,dev?:{maxCycles?:num
   if(a.sourceCutover){const c=a.sourceCutover;need(Number.isSafeInteger(c.afterEpoch)&&c.afterEpoch>=a.firstEpoch&&realpathSync(c.sourceRoot)===c.sourceRoot&&c.sourceRoot!==a.sourceRoot,'follower_cutover');regularPin(c.sourceAdmission);
     need(!c.sourceRoot.startsWith(a.sourceRoot+path.sep)&&!a.sourceRoot.startsWith(c.sourceRoot+path.sep),'follower_cutover_alias');}
   if(a.payoutRegistry){need(a.sourceCutover,'payout_registry_requires_cutover');readPayoutRegistry(a.payoutRegistry);}
+  if(a.standingPayoutRefresh){need(a.carryFrom.checkpoint?.mode!=='INCOMPLETE_EPOCH','standing_payout_requires_closed_prefix');standingPolicy(a.standingPayoutRefresh,a);}
   const review=JSON.parse(regularPin({path:a.reviewFile,sha256:a.reviewSha256}).toString());
   need(review.decision==='APPROVE_CONSERVING_CAPTURE_FOLLOWER_PAPER_OPERATION'&&review.protocolSha256===a.protocolSha256&&review.inputMode===a.inputMode
     &&review.sourceRoot===a.sourceRoot&&review.firstEpoch===a.firstEpoch&&review.outputDirectory===a.outputDirectory&&stableJSON(review.codeSha256)===stableJSON(a.codeSha256)
-    &&stableJSON(review.sourceAdmission)===stableJSON(a.sourceAdmission)&&stableJSON(review.carryFrom)===stableJSON(a.carryFrom)&&stableJSON(review.sourceCutover)===stableJSON(a.sourceCutover)&&stableJSON(review.payoutRegistry)===stableJSON(a.payoutRegistry),'follower_review');
+    &&stableJSON(review.sourceAdmission)===stableJSON(a.sourceAdmission)&&stableJSON(review.carryFrom)===stableJSON(a.carryFrom)&&stableJSON(review.sourceCutover)===stableJSON(a.sourceCutover)&&stableJSON(review.payoutRegistry)===stableJSON(a.payoutRegistry)&&stableJSON(review.standingPayoutRefresh)===stableJSON(a.standingPayoutRefresh),'follower_review');
   need(!a.outputDirectory.startsWith(a.sourceRoot+path.sep)&&!a.sourceRoot.startsWith(a.outputDirectory+path.sep)&&a.sourceRoot!==a.outputDirectory,'follower_source_output_overlap');
   if(a.sourceCutover)need(!a.outputDirectory.startsWith(a.sourceCutover.sourceRoot+path.sep)&&!a.sourceCutover.sourceRoot.startsWith(a.outputDirectory+path.sep)&&a.sourceCutover.sourceRoot!==a.outputDirectory,'follower_source_output_overlap');
   for(const required of ['scripts/research/maker_fill_paper.ts','apps/worker/src/shadow/PaperMakerExecution.ts'])need(Object.keys(a.codeSha256).some(p=>path.resolve(p)===path.join(ROOT,required)),'follower_required_code_pin');
@@ -502,12 +610,13 @@ export async function runPaperFollower(admissionFile:string,dev?:{maxCycles?:num
   const seed=seedFollower(a),db=createPaperDatabase(seed.file);
   let config:any,lastResult:any,lastModeledEpoch=a.carryFrom.checkpoint?.lastModeledEpoch??a.carryFrom.lastEpoch,lastResultPath=a.carryFrom.result.path;
   let lastClosedEpoch=a.carryFrom.lastEpoch,lastReceipt=a.carryFrom.result.path,lastDisposition='CARRIED_CLOSED_ACCOUNT';
-  const payoutReportFile=path.join(a.outputDirectory,'observed-payout-application.json');let payoutApplication:any=null;
+  const payoutReportFile=path.join(a.outputDirectory,'observed-payout-application.json');let payoutApplication:any=null,payoutApplicationPath=payoutReportFile;
   try {
   config=JSON.parse(readFileSync(path.join(ROOT,'configs/worker.json'),'utf8'));
   lastResult=seed.result;
   if(seed.needsAccountProof){const initial=exactAccount(db);
-   if(a.carryFrom.checkpoint){const cp=seed.checkpointReceipt,expected=cp.paperCheckpoint.accountState;
+   if(a.carryFrom.checkpoint?.mode==='CLOSED_PREFIX'){need(stableJSON(closedPrefixCheckpoint(db))===stableJSON(seed.checkpointReceipt),'carried_closed_prefix_mismatch');}
+   else if(a.carryFrom.checkpoint?.mode==='INCOMPLETE_EPOCH'){const cp=seed.checkpointReceipt,expected=cp.paperCheckpoint.accountState;
     need(expected&&stableJSON(initial)===stableJSON(cp.account)&&expected.cashUSDC===initial.cashUSDC&&stableJSON(expected.shares)===stableJSON(initial.heldShares)&&expected.reservedBuyUSDC===initial.reservedBuyUSDC&&stableJSON(expected.reservedSellShares)===stableJSON(initial.reservedSellShares),'carried_checkpoint_account_mismatch');
     if(expected.settlements!==undefined)need(stableJSON(db.prepare('SELECT * FROM paper_execution_settlements ORDER BY rowid').all())===stableJSON(expected.settlements),'carried_checkpoint_settlements');
     const tables=[['orders','SELECT * FROM shadow_orders ORDER BY id'],['queues','SELECT * FROM paper_execution_queues ORDER BY token,side,price'],['trades','SELECT * FROM paper_execution_trades ORDER BY rowid'],['allocations','SELECT * FROM paper_execution_allocations ORDER BY rowid']];
@@ -528,6 +637,7 @@ export async function runPaperFollower(admissionFile:string,dev?:{maxCycles?:num
   payoutApplication=a.payoutRegistry?checkedPayoutApplication(db,a.payoutRegistry):null;
   if(existsSync(payoutReportFile))need(payoutApplication&&stableJSON(ownedJSON(payoutReportFile))===stableJSON(payoutApplication),'payout_application_conflict');
   else if(payoutApplication)immutable(payoutReportFile,payoutApplication);
+  const standing=latestStandingPayout(db,a.outputDirectory);if(standing){payoutApplication=standing;payoutApplicationPath=standing.file;}
   } catch(error) {
     const failure:any=error instanceof Error?error:new Error(String(error));
     let account:ReturnType<typeof exactAccount>|null=null,accountReadError:string|null=null,cursors:any[]|null=null,cursorReadError:string|null=null;
@@ -552,12 +662,15 @@ export async function runPaperFollower(admissionFile:string,dev?:{maxCycles?:num
     lastState={schema:'CONSERVING_PAPER_FOLLOWER_STATE_V2',mode:FILL_PROTOCOL.mode,status,pid:process.pid,activeEpoch,
       heartbeatUTC:new Date().toISOString(),sourceRoot:a.sourceRoot,sourceCutover:a.sourceCutover??null,sourceCaptureDuplicated:false,...account,lastModeledEpoch,lastResultPath,lastClosedEpoch,lastReceipt,lastDisposition,
       sourceAsOfUTC:valuation?.terminal?.accounting?.valuationTs??lastResult?.terminal?.accounting?.valuationTs??null,complete,modelNetPnlUSDC:complete?valuation.terminal.accounting.netPnl:null,
-      observedPayoutApplication:payoutApplication?{path:payoutReportFile,registry:payoutApplication.registry,at:payoutApplication.at,costScenario:'paper-zero-redemption-cost-v1',actualGas:null,actualRedemption:null}:null,
+      observedPayoutApplication:payoutApplication?{path:payoutApplicationPath,registry:payoutApplication.registry??null,policy:payoutApplication.policy??null,at:payoutApplication.at,costScenario:'paper-zero-redemption-cost-v1',actualGas:null,actualRedemption:null}:null,
       modeledFills:(db.prepare('SELECT COUNT(*) n FROM shadow_fills').get() as any).n,consumedEpochs:(db.prepare('SELECT COUNT(*) n FROM paper_consumed_epochs').get() as any).n,completedEpochs:(db.prepare("SELECT COUNT(*) n FROM paper_consumed_epochs WHERE disposition='MODELLED'").get() as any).n,skippedEpochs:(db.prepare("SELECT COUNT(*) n FROM paper_consumed_epochs WHERE disposition='SKIP_MODEL_SOURCE_INELIGIBLE'").get() as any).n,
+      payoutRefresh:standingPayoutSummary(db),
+      payoutRefreshQuarantine:db.prepare("SELECT 1 FROM sqlite_master WHERE name='paper_payout_refresh_quarantine'").get()?(db.prepare('SELECT payload_json FROM paper_payout_refresh_quarantine WHERE source_key=?').get(PAYOUT_SOURCE_KEY) as any)?.payload_json??null:null,
       actualRevenue:null,realizedVenueProfit:null,actualAccountChargesUSD:null,economicAdvantage:'NOT_ESTABLISHED',...extra};atomic(path.join(a.outputDirectory,'state.json'),lastState)};
   try{
     state('WAITING_CLOSED_SOURCE');while(!stopping&&(!dev?.maxCycles||cycles++<dev.maxCycles)){
       verifyCode();regularPin(a.sourceAdmission);if(a.sourceCutover)regularPin(a.sourceCutover.sourceAdmission);if(a.payoutRegistry)readPayoutRegistry(a.payoutRegistry);verifyFollowerKernelLock(a.outputDirectory);const disk=statfsSync(a.outputDirectory,{bigint:true});need(disk.bavail*disk.bsize>=8589934592n,'disk_reserve');
+      if(a.standingPayoutRefresh&&!stopping)await refreshHeldPayouts(db,a,dev?.payoutClock?.()??Date.now(),dev?.runPayoutCommand);
       const roots=a.sourceCutover?[{root:a.sourceRoot,min:a.firstEpoch,max:a.sourceCutover.afterEpoch},{root:a.sourceCutover.sourceRoot,min:a.sourceCutover.afterEpoch+1,max:Infinity}]:[{root:a.sourceRoot,min:a.firstEpoch,max:Infinity}];
       const epochs=roots.flatMap(r=>readdirSync(r.root).filter(n=>/^epoch-\d{6}$/.test(n)).map(n=>Number(n.slice(6))).filter(n=>n>=r.min&&n<=r.max)).sort((x,y)=>x-y);
       const sourceRootFor=(n:number)=>a.sourceCutover&&n>a.sourceCutover.afterEpoch?a.sourceCutover.sourceRoot:a.sourceRoot;
@@ -565,7 +678,7 @@ export async function runPaperFollower(admissionFile:string,dev?:{maxCycles?:num
       for(const n of epochs){if(stopping)break;const epoch=path.join(sourceRootFor(n),'epoch-'+String(n).padStart(6,'0')),summaryFile=path.join(epoch,'epoch-summary.json');if(n>expected||!existsSync(summaryFile))break;
        const consumed=db.prepare('SELECT * FROM paper_consumed_epochs WHERE epoch=?').get(n) as any;
        if(consumed){need(hash(readFileSync(summaryFile))===consumed.source_sha&&hash(readFileSync(consumed.result_file))===consumed.result_sha,'consumed_epoch_changed');expected=n+1;continue;}
-       activeEpoch=n;if(a.carryFrom.checkpoint&&n===a.carryFrom.checkpoint.resumeEpoch){regularPin(a.carryFrom.checkpoint.resumeSource.summary);regularPin(a.carryFrom.checkpoint.resumeSource.ledger);}
+       activeEpoch=n;if(a.carryFrom.checkpoint?.mode==='INCOMPLETE_EPOCH'&&n===a.carryFrom.checkpoint.resumeEpoch){regularPin(a.carryFrom.checkpoint.resumeSource.summary);regularPin(a.carryFrom.checkpoint.resumeSource.ledger);}
        state('CHECKING_CLOSED_SOURCE');const eligibility=await structuralDisposition(epoch,config.topN);if(stopping)break;const sourceSha=eligibility.summarySha256;
        if(a.sourceCutover&&n===a.sourceCutover.afterEpoch+1){
         const priorEpoch=path.join(a.sourceRoot,'epoch-'+String(a.sourceCutover.afterEpoch).padStart(6,'0'));
@@ -593,6 +706,7 @@ export async function runPaperFollower(admissionFile:string,dev?:{maxCycles?:num
           if(existsSync(payoutReportFile))need(stableJSON(ownedJSON(payoutReportFile))===stableJSON(applied),'payout_application_conflict');else immutable(payoutReportFile,applied);payoutApplication=applied;
         }
        }
+       if(a.standingPayoutRefresh&&!db.prepare('SELECT 1 FROM paper_replay_cursor WHERE epoch=?').get(epoch)){const applied=applyStandingPayouts(db,a,ownedJSON(path.join(epoch,'source/ledger.json')).startedAt);if(applied){payoutApplication=applied;payoutApplicationPath=applied.file;}}
        const report=path.join(a.outputDirectory,'epoch-'+String(n).padStart(6,'0')+'.json');let result:any,disposition:string;
        if(eligibility.reason){disposition='SKIP_MODEL_SOURCE_INELIGIBLE';result={schema:'PAPER_FOLLOWER_SOURCE_INELIGIBLE_V1',disposition,epoch,reason:eligibility.reason,detail:eligibility.detail,source:eligibility,
          accountUnchanged:exactAccount(db),modelNetPnlUSDC:null,reward:null,actualRevenue:null,sourceCaptureDuplicated:false};}
@@ -605,6 +719,7 @@ export async function runPaperFollower(admissionFile:string,dev?:{maxCycles?:num
        if(disposition==='MODELLED'){lastResult=ownedJSON(report);lastModeledEpoch=n;lastResultPath=report;}
        lastClosedEpoch=n;lastReceipt=report;lastDisposition=disposition;
        state(disposition==='MODELLED'?'COMPLETED_EPOCH':'SKIPPED_MODEL_SOURCE_INELIGIBLE',{lastDisposition:disposition,lastClosedEpoch:n,lastReceipt:report,sourceBoundary:result.sourceBoundary??null});advanced=true;expected=n+1;
+       if(a.standingPayoutRefresh&&!stopping)await refreshHeldPayouts(db,a,dev?.payoutClock?.()??Date.now(),dev?.runPayoutCommand);
       }
       activeEpoch=null;if(!advanced)state('WAITING_CLOSED_SOURCE');if(!stopping&&(!dev?.maxCycles||cycles<dev.maxCycles))await(dev?.wait?.(3000)??new Promise(r=>setTimeout(r,3000)));
     }

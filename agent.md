@@ -267,3 +267,19 @@ clock origin requires zero obligations and preserves both original clocks.
 A pinned independently observed binary payout registry may settle owned tokens
 only at an eligible source boundary after receipt. Cash postings stay SIMULATED,
 with explicit zero model redemption cost and unknown actual gas/revenue.
+
+
+### Standing own-held paper valuation (V4)
+
+A separately reviewed `standingPayoutRefresh` policy may read only original
+positive holdings carried by the existing counterfactual bank. The collector
+and independent verifier are exact external FilePins, run outside SQL
+transactions. A durable PREPARED reservation precedes any lookup. Preserve
+minimum polling time and original source/condition identity; HTTP401/403
+embargoes the source across restart/carry and policy changes. The runner has
+no automatic release. Verified binary payout evidence is cached, then cash
+posts atomically at a later eligible source clock with no active obligations.
+Unsupported/fractional/pending values stay explicit. CLOSED_PREFIX custody
+permits a graceful same-bank upgrade with trailing skipped captures and an
+older last modeled result. No original opening, fill, cursor or settlement
+is replayed. This adds paper accounting, not real redemption or alpha.
