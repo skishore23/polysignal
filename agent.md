@@ -283,3 +283,16 @@ Unsupported/fractional/pending values stay explicit. CLOSED_PREFIX custody
 permits a graceful same-bank upgrade with trailing skipped captures and an
 older last modeled result. No original opening, fill, cursor or settlement
 is replayed. This adds paper accounting, not real redemption or alpha.
+
+
+### V5 bounded verification and replay lifecycle
+
+The follower still freshly verifies every consumed source/result digest. Digest-only
+checks now stream through a fixed64KiB scratch buffer; no semantic cache or
+weaker metadata-only check replaces original hashes. Complete published reports
+remain unchanged, while only the account/valuation projection needed by current
+state is retained in memory. Closing a replay releases its book/clock context;
+SQLite clock callbacks fail closed after release and a new core installs its
+own callback. Same-bank carry remains independently reviewed and no financial
+or source policy changes follow. A paired authored V4/V5 full report comparison
+checks exact normalized bytes, excluding only measured resource counters.

@@ -3,7 +3,8 @@ import { EventEmitter } from 'node:events';
 import { Readable } from 'node:stream';
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import {spawnSync} from 'node:child_process';
 import type { IncomingMessage, ClientRequest } from 'node:http';
 import type WebSocket from 'ws';
 import { OperatingSourceCapture, verifyOperatingCaptureArchive } from '../../scripts/research/maker_operating_capture';
@@ -13,8 +14,8 @@ import { createPaperDatabase, replayPaperEpoch } from '../../scripts/research/ma
 
 const START=1800000000000, CONDITION='0x'+'a'.repeat(64);
 const hash=(x:string|Buffer)=>createHash('sha256').update(x).digest('hex');
-const dirs:string[]=[];const dbs:ReturnType<typeof createPaperDatabase>[]=[];
-afterEach(()=>{for(const db of dbs.splice(0))db.close();vi.restoreAllMocks();vi.useRealTimers();for(const d of dirs.splice(0))rmSync(d,{recursive:true,force:true})});
+const dirs:string[]=[];const controls:string[]=[];const dbs:ReturnType<typeof createPaperDatabase>[]=[];
+afterEach(()=>{for(const db of dbs.splice(0))db.close();vi.restoreAllMocks();vi.useRealTimers();for(const d of dirs.splice(0))rmSync(d,{recursive:true,force:true});for(const file of controls.splice(0))rmSync(file,{force:true})});
 class Socket extends EventEmitter {
  send(_raw:string,_options:unknown,cb:(e?:Error)=>void){cb()}
  pong(_raw:Buffer){}
@@ -143,6 +144,10 @@ describe('actual archive-to-MakerLoop paper replay, all transports authored offl
   await expect(replayPaperEpoch(f.epoch,broken,f.config,logger)).rejects.toThrow('authored refusal storage failure');
   expect((broken.prepare('SELECT COUNT(*) n FROM paper_replay_print_refusals').get() as any).n).toBe(0);const cursor=broken.prepare('SELECT * FROM paper_replay_cursor').get() as any;expect(cursor).toBeTruthy();
   broken.exec('DROP TRIGGER authored_refusal_failure');await replayPaperEpoch(f.epoch,broken,f.config,logger);expect(state(broken)).toEqual(state(control));
+ });
+
+ it('publishes identical full authored replay semantics with preserved V4 runner/core and prospective bounded-memory code',async()=>{const f=await archive(),nonce=randomUUID().replaceAll('-',''),before='/Users/kishore/Emergent/results/polysignal_pivot_v1/coordinator40/memory-poll-hash-repair/before',coreName='.authored-memory-before-'+nonce,core=path.resolve('apps/worker/src/shadow/'+coreName+'.ts'),runner=path.resolve('scripts/research/.authored-memory-before-'+nonce+'.ts');controls.push(core,runner);const oldCore=readFileSync(before+'/apps/worker/src/shadow/PaperMakerExecution.ts');expect(hash(oldCore)).toBe('d78667eaa4c11dd262208a3698d59445b8a3171f24b9be95ea95fad80c755ce1');writeFileSync(core,oldCore);const old=readFileSync(before+'/scripts/research/maker_fill_paper.ts','utf8');expect(hash(old)).toBe('83601e8d45db5ecc93dd30b07b3706d7c1a82d3528a576ebb6a42fc7e385e14f');writeFileSync(runner,old.replace("from '../../apps/worker/src/shadow/PaperMakerExecution'", "from '../../apps/worker/src/shadow/"+coreName+"'"));
+  const run=(module:string,name:string)=>{const output=path.join(f.root,name+'.json'),r=spawnSync(process.execPath,['--import','tsx','tests/maker/fixtures/maker_fill_memory_probe.ts','replay-file',module,f.epoch,path.join(f.root,name+'.sqlite'),output],{encoding:'utf8',timeout:30000});expect(r.status,r.stderr).toBe(0);return JSON.parse(readFileSync(output,'utf8'))};const baseline=run(runner,'v4-control'),candidate=run(path.resolve('scripts/research/maker_fill_paper.ts'),'v5-candidate');expect(candidate).toEqual(baseline);expect(hash(readFileSync(path.join(f.root,'v5-candidate.json')))).toBe(hash(readFileSync(path.join(f.root,'v4-control.json'))));expect(candidate.fills.length).toBeGreaterThan(0);expect(candidate.terminal.snapshot.reservedBuyUSDC).toBe('0.000000000000000000');
  });
 
 });

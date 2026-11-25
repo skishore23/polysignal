@@ -2,7 +2,7 @@
 import Database from 'better-sqlite3';
 import {spawn} from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, constants, copyFileSync, createReadStream, existsSync, fstatSync, fsyncSync, lstatSync, linkSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, statfsSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, copyFileSync, createReadStream, existsSync, fstatSync, fsyncSync, lstatSync, linkSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, statSync, statfsSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -17,6 +17,17 @@ import type { RawCapture } from './maker_startup_capture';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const hash = (v: string | Buffer) => createHash('sha256').update(v).digest('hex');
+// Every byte is freshly hashed. The shared synchronous scratch buffer is bounded,
+// independently of report/history length; there is deliberately no digest cache.
+const FILE_HASH_SCRATCH=Buffer.allocUnsafe(64*1024);
+export function hashFileSync(file:string){const fd=openSync(file,'r');try{const before=fstatSync(fd);need(before.isFile(),'file_hash_regular:'+file);const digest=createHash('sha256');let length=0,n:number;
+ while((n=readSync(fd,FILE_HASH_SCRATCH,0,FILE_HASH_SCRATCH.length,null))>0){digest.update(FILE_HASH_SCRATCH.subarray(0,n));length+=n;}
+ const after=fstatSync(fd),named=statSync(file);need(length===before.size&&before.size===after.size&&before.mtimeMs===after.mtimeMs&&before.ctimeMs===after.ctimeMs&&before.dev===named.dev&&before.ino===named.ino,'file_hash_changed:'+file);return digest.digest('hex');
+ }finally{closeSync(fd)}}
+export function retainedResultProjection(value:any){if(!value?.terminal)return {schema:value?.schema,epoch:value?.epoch};const snapshot=value.terminal.snapshot,accounting=value.terminal.accounting;
+ return {schema:value.schema,epoch:value.epoch,terminal:{snapshot:snapshot?{cashUSDC:snapshot.cashUSDC,shares:structuredClone(snapshot.shares),reservedBuyUSDC:snapshot.reservedBuyUSDC,reservedSellShares:structuredClone(snapshot.reservedSellShares)}:undefined,accounting:accounting?{complete:accounting.complete,netPnl:accounting.netPnl,valuationTs:accounting.valuationTs}:undefined}};
+}
+function retainedApplicationProjection(value:any){return value?{...retainedResultProjection(value),registry:structuredClone(value.registry),policy:structuredClone(value.policy),at:structuredClone(value.at),file:value.file}:null;}
 const save = (p: string, v: unknown) => writeFileSync(p, JSON.stringify(v, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
 function need(v: unknown, why: string): asserts v { if (!v) throw Error('fill_paper:' + why); }
 const SCALE = 1_000_000_000n;
@@ -114,7 +125,7 @@ export class PaperFillSession {
           budgetUSDC: 20, availableLiabilityUSDC: liability,
           feePerShareUSDC: '0', reservedShares: 0, inventoryLimitShares: 200 };
       } });
-    } catch (error) { this.gate.dispose(); throw error; }
+    } catch (error) { try { this.gate.dispose(); } finally { this.execution.releaseSourceContext(); } throw error; }
   }
   cancelAll(at: PaperClock) {
     const rows = this.db.prepare("SELECT id FROM shadow_orders WHERE status IN ('OPEN','PARTIAL') ORDER BY id").all() as any[];
@@ -139,7 +150,7 @@ export class PaperFillSession {
     this.lastTick = at.mono;
     this.execution.reconcileOrders(at);
   }
-  close() { try { this.engine.stop(); } finally { this.gate.dispose(); } }
+  close() { try { this.engine.stop(); } finally { try { this.gate.dispose(); } finally { this.execution.releaseSourceContext(); } } }
 }
 
 export function createPaperDatabase(file: string): Database.Database {
@@ -331,7 +342,7 @@ export async function replayPaperEpoch(epoch: string, db: Database.Database, con
       }));
     const output = { schema: 'CONSERVING_PAPER_EPOCH_RESULT_V1', mode: FILL_PROTOCOL.mode, epoch, sourceVerification: verification,
       sourceBoundary, wireFrameCount, frameCount, samplesApplied: sampleIndex, withheldSamples, invalidSourceFrames,
-      frozenSourceLedgerSha256: hash(readFileSync(path.join(epoch, 'source/ledger.json'))),
+      frozenSourceLedgerSha256: hashFileSync(path.join(epoch, 'source/ledger.json')),
       terminal, markouts, terminalNoSettlementPnlBoundsUSDC: {
         lower: cashText(exactCash - 100n * SCALE * SCALE), upper: cashText(exactCash + held * SCALE - 100n * SCALE * SCALE),
         meaning: 'Model cash plus binary holdings valued in [0,1]; not a settlement forecast or realized profit' },
@@ -357,7 +368,7 @@ type Admission = { schema: 'CONSERVING_PAPER_REPLAY_ADMISSION_V1'; codeSha256: R
 export async function runFrozenPaperReplay(admissionFile: string) {
   const admission: Admission = JSON.parse(readFileSync(admissionFile, 'utf8'));
   need(admission.schema === 'CONSERVING_PAPER_REPLAY_ADMISSION_V1' && admission.protocolSha256 === hash(JSON.stringify(FILL_PROTOCOL)), 'admission_protocol');
-  for (const [p, digest] of Object.entries({ ...admission.codeSha256, ...admission.source.files })) need(hash(readFileSync(p)) === digest, 'frozen_input_changed:' + p);
+  for (const [p, digest] of Object.entries({ ...admission.codeSha256, ...admission.source.files })) need(hashFileSync(p) === digest, 'frozen_input_changed:' + p);
   const reviewRaw = readFileSync(admission.reviewFile); need(hash(reviewRaw) === admission.reviewSha256, 'review_hash');
   const review = JSON.parse(reviewRaw.toString()); need(review.decision === 'APPROVE_FROZEN_ONE_CAPTURE_PAPER_ENGINEERING' && review.protocolSha256 === admission.protocolSha256 && review.outputDirectory === admission.outputDirectory && JSON.stringify(review.codeSha256) === JSON.stringify(admission.codeSha256) && JSON.stringify(review.source) === JSON.stringify(admission.source), 'independent_source_review');
   need(!existsSync(admission.outputDirectory), 'frozen_run_already_started'); mkdirSync(admission.outputDirectory, { recursive: true, mode: 0o700 });
@@ -383,17 +394,19 @@ export type FollowerAdmission = {schema:'CONSERVING_PAPER_FOLLOWER_ADMISSION_V2'
   inputMode:'CLOSED_CAPTURE_FOLLOWER'|'AUTHORED_OFFLINE_FIXTURE';codeSha256:Record<string,string>;
   sourceRoot:string;firstEpoch:number;sourceAdmission:FilePin;carryFrom:FollowerCarry;sourceCutover?:FollowerSourceCutover;payoutRegistry?:FilePin;standingPayoutRefresh?:FilePin;
   outputDirectory:string;reviewFile:string;reviewSha256:string};
-export const FOLLOWER_PROTOCOL={schema:'CONSERVING_PAPER_FOLLOWER_DRIVER_V4',paper:FILL_PROTOCOL,
+export const FOLLOWER_PROTOCOL={schema:'CONSERVING_PAPER_FOLLOWER_DRIVER_V5',paper:FILL_PROTOCOL,
   account:'mandatory independently checked closed DB: terminal account or explicitly reviewed incomplete-epoch checkpoint; copy once, preserve exact cash/holdings/orders/reservations/cursor/RNG, no refund or reset',
   sourceCutover:'optional single pinned epoch boundary; consume every old epoch first, no active orders at origin change, persist raw new process mono origin with nondecreasing UTC; no clock offsets',
   reports:'immutable per-epoch receipts, restart compares complete source/economic projection excluding measured resources only',
   payoutCustody:'boundary application JSON/SHA and exact canonical prefix commit atomically with settlement; warm restart verifies retained boundary evidence and never revalues it from current funds',
   selection:'all ascending closed captures from last carried epoch+1; explicit structural-ineligible receipts are not rewards',
   standingValuation:'Optional separately admitted own-held-token source refresh, >=300000ms pending polls, independently verified raw result, permanent finalized certificates, no fund effect on unavailable/unsupported; apply whole holdings only at later source-epoch receipt with zero obligations',
+  memory:'Fresh bounded-chunk SHA256 without a digest cache; retain only runtime valuation projection, preserve complete published reports and comparisons; release completed source-clock contexts with fail-closed callbacks',
   waiting:'retain last source-as-of account/valuation, incomplete PnL remains null',sourceCaptureDuplicated:false} as const;
 function regularPin(pin:FilePin){need(pin&&typeof pin.path==='string'&&/^[a-f0-9]{64}$/.test(pin.sha256),'file_pin');
   need(realpathSync(pin.path)===path.resolve(pin.path)&&lstatSync(pin.path).isFile()&&!lstatSync(pin.path).isSymbolicLink(),'file_pin_identity');
   const raw=readFileSync(pin.path);need(hash(raw)===pin.sha256,'file_pin_changed:'+pin.path);return raw;}
+function verifyPin(pin:FilePin){need(pin&&typeof pin.path==='string'&&/^[a-f0-9]{64}$/.test(pin.sha256),'file_pin');need(realpathSync(pin.path)===path.resolve(pin.path)&&lstatSync(pin.path).isFile()&&!lstatSync(pin.path).isSymbolicLink(),'file_pin_identity');need(hashFileSync(pin.path)===pin.sha256,'file_pin_changed:'+pin.path);}
 function syncDirectory(dir:string){const fd=openSync(dir,'r');try{fsyncSync(fd)}finally{closeSync(fd)}}
 const atomic=(file:string,value:unknown)=>{const tmp=file+'.'+randomUUID()+'.tmp';const fd=openSync(tmp,'wx',0o600);try{writeFileSync(fd,JSON.stringify(value,null,2)+'\n');fsyncSync(fd)}finally{closeSync(fd)}renameSync(tmp,file);syncDirectory(path.dirname(file));};
 function immutable(file:string,value:unknown){const tmp=file+'.'+randomUUID()+'.publishing';const fd=openSync(tmp,'wx',0o600);try{writeFileSync(fd,JSON.stringify(value,null,2)+'\n');fsyncSync(fd)}finally{closeSync(fd)}
@@ -433,7 +446,7 @@ async function structuralDisposition(epoch:string,topN:number){
    }catch(error){if(isStructuralSourceIneligible(error)){reason='STRUCTURAL_SOURCE_TERMS_INELIGIBLE';detail=String(error);}else throw error;
    }}
   if(!reason&&archive.messages===0)reason='NO_DATA_STREAM';
-  return {reason,detail,archive,summarySha256:hash(readFileSync(path.join(epoch,'epoch-summary.json'))),ledgerSha256:hash(readFileSync(path.join(epoch,'source/ledger.json')))};
+  return {reason,detail,archive,summarySha256:hashFileSync(path.join(epoch,'epoch-summary.json')),ledgerSha256:hashFileSync(path.join(epoch,'source/ledger.json'))};
 }
 function readPayoutRegistry(pin:FilePin){const registry=JSON.parse(regularPin(pin).toString()),result=JSON.parse(regularPin(registry.sourceResult).toString()),review=JSON.parse(regularPin(registry.sourceReview).toString());
   need(registry.schema==='PAPER_OBSERVED_BINARY_PAYOUT_REGISTRY_V1'&&registry.costScenario==='paper-zero-redemption-cost-v1'&&Number.isSafeInteger(registry.observedReceiptUTC)&&registry.observedReceiptUTC>=0,'payout_registry');
@@ -458,9 +471,9 @@ type PayoutCommand=(argv:string[],deadline:number,log:string)=>Promise<number>;
 function standingPolicy(pin:FilePin,a?:FollowerAdmission){const p=JSON.parse(regularPin(pin).toString());
  need(p.schema==='PAPER_OWN_HELD_PAYOUT_REFRESH_POLICY_V1'&&p.enabled===true&&Number.isSafeInteger(p.minIntervalMs)&&p.minIntervalMs>=300000&&Number.isSafeInteger(p.maxWallMs)&&p.maxWallMs>0&&p.maxPositionsPerBatch===10&&p.maxRequestsPerBatch===60,'standing_payout_policy');
  need(stableJSON(p.allowedOrigins)===stableJSON(['https://polygon-bor-rpc.publicnode.com'])&&p.requestTimeoutSeconds===12&&p.maxResponseBodyBytes===1048576,'standing_payout_source_scope');
- for(const file of [p.pythonExecutable,p.collector,p.verifier,...p.helperFilePins])regularPin(file);
+ for(const file of [p.pythonExecutable,p.collector,p.verifier,...p.helperFilePins])verifyPin(file);
  need((statSync(p.pythonExecutable.path).mode&0o111)!==0&&Array.isArray(p.identitySources)&&p.identitySources.length>0,'standing_payout_runtime');
- for(const source of p.identitySources){need(realpathSync(source.sourceRoot)===source.sourceRoot,'standing_identity_source');regularPin(source.sourceAdmission);}
+ for(const source of p.identitySources){need(realpathSync(source.sourceRoot)===source.sourceRoot,'standing_identity_source');verifyPin(source.sourceAdmission);}
  if(a)need(p.allowedAccountRoots.includes(a.outputDirectory)&&p.allowedOperationReviewFiles.includes(a.reviewFile),'standing_payout_owner_scope');return p;
 }
 function installStandingPayoutTables(db:Database.Database){db.exec(`
@@ -475,11 +488,11 @@ function installStandingPayoutTables(db:Database.Database){db.exec(`
  CREATE TRIGGER IF NOT EXISTS paper_payout_refresh_certificate_delete BEFORE DELETE ON paper_payout_refresh_certificates BEGIN SELECT RAISE(ABORT,'fill_paper:immutable_payout_certificate'); END;
  CREATE TRIGGER IF NOT EXISTS paper_payout_refresh_application_update BEFORE UPDATE ON paper_payout_refresh_applications BEGIN SELECT RAISE(ABORT,'fill_paper:immutable_payout_application'); END;
  CREATE TRIGGER IF NOT EXISTS paper_payout_refresh_application_delete BEFORE DELETE ON paper_payout_refresh_applications BEGIN SELECT RAISE(ABORT,'fill_paper:immutable_payout_application'); END;`);}
-function filePin(file:string):FilePin{return {path:file,sha256:hash(readFileSync(file))};}
+function filePin(file:string):FilePin{return {path:file,sha256:hashFileSync(file)};}
 function payoutIdentity(db:Database.Database,policy:any,token:string,dir:string){
  const canonical=db.prepare('SELECT t.market_id,t.outcome,m.condition_id,m.slug FROM tokens t JOIN markets m ON m.id=t.market_id WHERE t.id=?').get(token) as any;need(canonical&&/^0x[a-fA-F0-9]{64}$/.test(canonical.condition_id),'payout_identity_canonical_missing');
  const epochs=db.prepare("SELECT epoch,source_sha FROM paper_consumed_epochs WHERE disposition='MODELLED' ORDER BY epoch DESC").all() as any[];
- for(const n of epochs)for(const admitted of policy.identitySources){const epoch=path.join(admitted.sourceRoot,'epoch-'+String(n.epoch).padStart(6,'0')),summary=path.join(epoch,'epoch-summary.json');if(!existsSync(summary)||hash(readFileSync(summary))!==n.source_sha)continue;
+ for(const n of epochs)for(const admitted of policy.identitySources){const epoch=path.join(admitted.sourceRoot,'epoch-'+String(n.epoch).padStart(6,'0')),summary=path.join(epoch,'epoch-summary.json');if(!existsSync(summary)||hashFileSync(summary)!==n.source_sha)continue;
   const ledger=ownedJSON(path.join(epoch,'source/ledger.json')),raw=path.join(epoch,'source/http/metadata.bin');if(!existsSync(raw))continue;const original=JSON.parse(readFileSync(raw,'utf8'));if(original.id!==canonical.market_id)continue;
   const pins:Record<string,FilePin>={};for(const name of ['metadata','market','book']){const file=path.join(epoch,'source/http',name+'.bin'),receipt=ledger.http.reads.find((r:any)=>r.name===name);need(receipt?.status==='COMPLETED'&&receipt.httpStatus===200&&receipt.sha256===filePin(file).sha256,'payout_identity_receipt');pins[name]=filePin(file);regularPin(pins[name]!);}
   need(stableJSON(ownedJSON(summary).source)===stableJSON(ledger),'payout_identity_ledger');
@@ -517,7 +530,7 @@ export async function refreshHeldPayouts(db:Database.Database,a:FollowerAdmissio
  const folder=path.join(a.outputDirectory,'payout-refresh');mkdirSync(folder,{recursive:true,mode:0o700});const dir=path.join(folder,now+'-'+randomUUID());mkdirSync(dir,{mode:0o700});const ownerAdmission=filePin(path.join(a.outputDirectory,'frozen-admission.json'));
  const checkpoint={schema:'PAPER_OWN_HELD_PAYOUT_CHECKPOINT_V1',asOfUTC:now,ownerAdmissionSha256:ownerAdmission.sha256,account:exactAccount(db),canonicalEventHash:hash(stableJSON(db.prepare('SELECT * FROM accounting_events ORDER BY id').all()))};const checkpointFile=path.join(dir,'account-checkpoint.json');immutable(checkpointFile,checkpoint);
  const positions:any[]=[],localUnavailable:any[]=[];for(const r of candidates){try{positions.push({...payoutIdentity(db,policy,r.token,dir),quantityShares:`${BigInt(r.shares)/SCALE}.${(BigInt(r.shares)%SCALE).toString().padStart(9,'0')}`})}catch(error){localUnavailable.push({token:r.token,status:'UNAVAILABLE',error:String(error)})}}
- const input={schema:'PAPER_OWN_HELD_PAYOUT_REFRESH_INPUT_V1',asOfUTC:now,policy:a.standingPayoutRefresh,ownerAdmission,accountCheckpoint:filePin(checkpointFile),accountCheckpointSha256:hash(readFileSync(checkpointFile)),sourceAdmissions:policy.identitySources.map((s:any)=>s.sourceAdmission),positions};const inputFile=path.join(dir,'input.json');immutable(inputFile,input);const output=path.join(dir,'capture');const prepared={schema:'PAPER_OWN_HELD_PAYOUT_REFRESH_ATTEMPT_V1',status:'PREPARED',atUTC:now,policy:a.standingPayoutRefresh,input:filePin(inputFile),positions:candidates.map(r=>r.token),actualRevenue:null};immutable(path.join(dir,'prepared.json'),prepared);
+ const input={schema:'PAPER_OWN_HELD_PAYOUT_REFRESH_INPUT_V1',asOfUTC:now,policy:a.standingPayoutRefresh,ownerAdmission,accountCheckpoint:filePin(checkpointFile),accountCheckpointSha256:hashFileSync(checkpointFile),sourceAdmissions:policy.identitySources.map((s:any)=>s.sourceAdmission),positions};const inputFile=path.join(dir,'input.json');immutable(inputFile,input);const output=path.join(dir,'capture');const prepared={schema:'PAPER_OWN_HELD_PAYOUT_REFRESH_ATTEMPT_V1',status:'PREPARED',atUTC:now,policy:a.standingPayoutRefresh,input:filePin(inputFile),positions:candidates.map(r=>r.token),actualRevenue:null};immutable(path.join(dir,'prepared.json'),prepared);
  db.transaction(()=>{db.prepare('INSERT INTO paper_payout_refresh_attempts VALUES(?,?,?)').run(dir,now,JSON.stringify(prepared));for(const r of candidates)db.prepare('INSERT INTO paper_payout_refresh_due VALUES(?,?,?,?,?) ON CONFLICT(token) DO UPDATE SET policy_sha=excluded.policy_sha,last_utc=excluded.last_utc,status=excluded.status').run(r.token,'',a.standingPayoutRefresh!.sha256,now,'PREPARED')})();
  let status='UNAVAILABLE',error:string|null=null,resultPin:FilePin|null=null,verificationPin:FilePin|null=null,observed:any[]=[];
  try{if(positions.length){const deadline=performance.now()+policy.maxWallMs;const argv=(script:FilePin)=>[policy.pythonExecutable.path,script.path,'--input',inputFile,'--output',output,'--policy',a.standingPayoutRefresh!.path];
@@ -538,7 +551,7 @@ export async function refreshHeldPayouts(db:Database.Database,a:FollowerAdmissio
 export function applyStandingPayouts(db:Database.Database,a:FollowerAdmission,at:PaperClock){if(!a.standingPayoutRefresh)return null;standingPolicy(a.standingPayoutRefresh,a);installStandingPayoutTables(db);need(!db.inTransaction,'payout_application_transaction');
  const ready=(db.prepare('SELECT * FROM paper_payout_refresh_certificates ORDER BY token').all() as any[]).map(r=>JSON.parse(r.payload_json)).filter(c=>c.item.observedReceiptUTC<=at.utc&&BigInt((db.prepare('SELECT shares FROM paper_execution_positions WHERE token=?').get(c.item.token) as any)?.shares??'0')>0n);if(!ready.length)return null;
  const core=new PaperMakerExecution(db,FILL_POLICY,()=>at);const file=path.join(a.outputDirectory,'payout-refresh','application-'+at.utc+'-'+randomUUID()+'.json');let application:any;
- db.transaction(()=>{for(const c of ready){const result=JSON.parse(regularPin(c.result).toString()),verification=JSON.parse(regularPin(c.verification).toString());regularPin(c.input);regularPin(c.policy);need(verification.decision==='VERIFIED_OWN_HELD_PAYOUT_REFRESH'&&verification.resultSha256===c.result.sha256&&verification.inputSha256===c.input.sha256&&verification.policySha256===c.policy.sha256&&result.positions.some((p:any)=>stableJSON(p)===stableJSON(c.item)),'cached_payout_certificate');
+ db.transaction(()=>{for(const c of ready){const result=JSON.parse(regularPin(c.result).toString()),verification=JSON.parse(regularPin(c.verification).toString());verifyPin(c.input);verifyPin(c.policy);need(verification.decision==='VERIFIED_OWN_HELD_PAYOUT_REFRESH'&&verification.resultSha256===c.result.sha256&&verification.inputSha256===c.input.sha256&&verification.policySha256===c.policy.sha256&&result.positions.some((p:any)=>stableJSON(p)===stableJSON(c.item)),'cached_payout_certificate');
    core.settleBinaryHolding({token:c.item.token,market:c.item.market,condition:c.item.condition,payout:c.item.payout,at,observedReceiptUTC:c.item.observedReceiptUTC,registrySha256:hash(stableJSON(c)),sourceResultSha256:c.result.sha256,sourceReviewSha256:c.verification.sha256,costScenario:'paper-zero-redemption-cost-v1'});}
    application={schema:'PAPER_STANDING_PAYOUT_APPLICATION_V1',at,policy:a.standingPayoutRefresh,certificates:ready,terminal:core.terminalReport({valuationTs:at.utc,asOfReceiptTs:at.utc}),canonicalPrefix:db.prepare('SELECT * FROM accounting_events ORDER BY id').all(),file,costScenario:'paper-zero-redemption-cost-v1',actualGas:null,actualRedemption:null,actualRevenue:null};const payload=JSON.stringify(application);db.prepare('INSERT INTO paper_payout_refresh_applications(payload_sha,payload_json) VALUES(?,?)').run(hash(payload),payload);
  })();immutable(file,application);return application;
@@ -553,12 +566,12 @@ export function closedPrefixCheckpoint(db:Database.Database){need(!db.inTransact
   const tables:Record<string,{rows:number;sha256:string}>={};for(const table of ['shadow_orders','shadow_fills','accounting_events','paper_execution_account','paper_execution_positions','paper_execution_queues','paper_execution_orders','paper_execution_trades','paper_execution_allocations','paper_execution_terms','paper_execution_watermarks','paper_execution_clock_origins','paper_execution_settlements','paper_replay_cursor','paper_consumed_epochs','paper_replay_payout_application','paper_replay_print_refusals','paper_payout_refresh_due','paper_payout_refresh_attempts','paper_payout_refresh_certificates','paper_payout_refresh_applications','paper_payout_refresh_quarantine']){
     if(!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))continue;
     const rows=db.prepare('SELECT * FROM '+table+' ORDER BY rowid').all();tables[table]={rows:rows.length,sha256:hash(stableJSON(rows))};
-  }need(hash(readFileSync(modeled.result_file))===modeled.result_sha,'closed_prefix_result_changed');const sourceEpoch=ownedJSON(modeled.result_file).epoch;need(typeof sourceEpoch==='string'&&path.basename(sourceEpoch)==='epoch-'+String(modeled.epoch).padStart(6,'0'),'closed_prefix_result_lineage');
+  }need(hashFileSync(modeled.result_file)===modeled.result_sha,'closed_prefix_result_changed');const sourceEpoch=ownedJSON(modeled.result_file).epoch;need(typeof sourceEpoch==='string'&&path.basename(sourceEpoch)==='epoch-'+String(modeled.epoch).padStart(6,'0'),'closed_prefix_result_lineage');
   return {schema:'PAPER_FOLLOWER_CLOSED_PREFIX_CHECKPOINT_V1',status:'CLOSED_PREFIX',lastConsumedEpoch:last.epoch,lastModeledEpoch:modeled.epoch,lastModeledResult:{path:modeled.result_file,sha256:modeled.result_sha,sourceEpoch},account,tables};
 }
 function seedFollower(a:FollowerAdmission){
   need(a.carryFrom&&Number.isSafeInteger(a.carryFrom.lastEpoch)&&a.carryFrom.lastEpoch>=1&&a.firstEpoch===a.carryFrom.lastEpoch+1,'follower_carry_lineage');
-  const seedRaw=regularPin(a.carryFrom.database),resultRaw=regularPin(a.carryFrom.result),review=JSON.parse(regularPin(a.carryFrom.review).toString());
+  verifyPin(a.carryFrom.database);const resultRaw=regularPin(a.carryFrom.result),review=JSON.parse(regularPin(a.carryFrom.review).toString());
   const checkpoint=a.carryFrom.checkpoint;
   const checkpointReceipt:any=checkpoint?JSON.parse(regularPin(checkpoint.receipt).toString()):null;
   const modeledEpoch=checkpoint?.lastModeledEpoch??a.carryFrom.lastEpoch;
@@ -569,7 +582,7 @@ function seedFollower(a:FollowerAdmission){
     if(checkpoint.mode==='INCOMPLETE_EPOCH'){need(checkpoint.resumeEpoch===a.firstEpoch,'follower_checkpoint_lineage');
     const epoch=path.join(a.sourceRoot,'epoch-'+String(a.firstEpoch).padStart(6,'0'));
     need(checkpoint.resumeSource.summary.path===path.join(epoch,'epoch-summary.json')&&checkpoint.resumeSource.ledger.path===path.join(epoch,'source/ledger.json'),'follower_checkpoint_source');
-    regularPin(checkpoint.resumeSource.summary);regularPin(checkpoint.resumeSource.ledger);
+    verifyPin(checkpoint.resumeSource.summary);verifyPin(checkpoint.resumeSource.ledger);
     need(checkpointReceipt.schema==='PAPER_FOLLOWER_RECOVERABLE_FAILURE_V2'&&checkpointReceipt.activeEpoch===a.firstEpoch&&checkpointReceipt.lastModeledEpoch===modeledEpoch&&checkpointReceipt.complete===false
       &&checkpointReceipt.paperCheckpoint?.status==='INCOMPLETE_RECOVERABLE'&&checkpointReceipt.paperCheckpoint.epoch===epoch&&checkpointReceipt.paperCheckpoint.terminalComplete===false,'follower_checkpoint_receipt');
     }else need(checkpointReceipt.schema==='PAPER_FOLLOWER_CLOSED_PREFIX_CHECKPOINT_V1'&&checkpointReceipt.status==='CLOSED_PREFIX'&&checkpointReceipt.lastConsumedEpoch===a.carryFrom.lastEpoch&&checkpointReceipt.lastModeledEpoch===modeledEpoch&&checkpointReceipt.lastModeledResult?.path===a.carryFrom.result.path&&checkpointReceipt.lastModeledResult.sha256===a.carryFrom.result.sha256&&path.basename(result.epoch)==='epoch-'+String(modeledEpoch).padStart(6,'0'),'follower_checkpoint_receipt');
@@ -577,14 +590,14 @@ function seedFollower(a:FollowerAdmission){
   for(const suffix of ['-wal','-journal'])need(!existsSync(a.carryFrom.database.path+suffix)||statSync(a.carryFrom.database.path+suffix).size===0,'seed_database_not_closed');
   const file=path.join(a.outputDirectory,'paper.sqlite'),receipt=path.join(a.outputDirectory,'carry-receipt.json');
   if(!existsSync(file)){need(!existsSync(receipt),'seed_database_missing');const tmp=file+'.'+randomUUID()+'.seed';copyFileSync(a.carryFrom.database.path,tmp,constants.COPYFILE_EXCL);
-    const fd=openSync(tmp,'r');try{fsyncSync(fd)}finally{closeSync(fd)}need(hash(readFileSync(tmp))===a.carryFrom.database.sha256&&hash(seedRaw)===a.carryFrom.database.sha256,'seed_copy_changed');renameSync(tmp,file);syncDirectory(a.outputDirectory);}
+    const fd=openSync(tmp,'r');try{fsyncSync(fd)}finally{closeSync(fd)}need(hashFileSync(tmp)===a.carryFrom.database.sha256&&hashFileSync(a.carryFrom.database.path)===a.carryFrom.database.sha256,'seed_copy_changed');renameSync(tmp,file);syncDirectory(a.outputDirectory);}
   if(existsSync(receipt)){need(stableJSON(ownedJSON(receipt).carryFrom)===stableJSON(a.carryFrom),'carry_receipt_changed');}
-  else {need(hash(readFileSync(file))===a.carryFrom.database.sha256,'unreceipted_seed_changed');immutable(receipt,{schema:'PAPER_FOLLOWER_CARRY_RECEIPT_V1',carryFrom:a.carryFrom,genesisNotRepeated:true});}
+  else {need(hashFileSync(file)===a.carryFrom.database.sha256,'unreceipted_seed_changed');immutable(receipt,{schema:'PAPER_FOLLOWER_CARRY_RECEIPT_V1',carryFrom:a.carryFrom,genesisNotRepeated:true});}
   const bank=lstatSync(file),original=statSync(a.carryFrom.database.path);need(bank.isFile()&&!bank.isSymbolicLink()&&bank.nlink===1&&!(bank.dev===original.dev&&bank.ino===original.ino),'carried_database_identity');
   const accountProof=path.join(a.outputDirectory,'carry-account-proof.json');
   if(existsSync(accountProof))need(stableJSON(ownedJSON(accountProof).carryFrom)===stableJSON(a.carryFrom),'carry_account_proof_changed');
-  else need(hash(readFileSync(file))===a.carryFrom.database.sha256,'unverified_carried_account_changed');
-  return {file,result,accountProof,checkpointReceipt,needsAccountProof:!existsSync(accountProof)};
+  else need(hashFileSync(file)===a.carryFrom.database.sha256,'unverified_carried_account_changed');
+  return {file,result:retainedResultProjection(result),accountProof,checkpointReceipt,needsAccountProof:!existsSync(accountProof)};
 }
 /** Follows closed captures only. It never starts a source connection or funds a new account. */
 export async function runPaperFollower(admissionFile:string,dev?:{maxCycles?:number;wait?:(ms:number)=>Promise<void>;afterReportPublished?:(epoch:number)=>void;beforeReplay?:(epoch:number)=>void;payoutClock?:()=>number;runPayoutCommand?:PayoutCommand;afterReplayCommit?:(epoch:number,state:{ordinal:number;at:PaperClock;randomState:number})=>void}){
@@ -592,8 +605,8 @@ export async function runPaperFollower(admissionFile:string,dev?:{maxCycles?:num
   need(a.schema==='CONSERVING_PAPER_FOLLOWER_ADMISSION_V2'&&a.protocolSha256===hash(JSON.stringify(FOLLOWER_PROTOCOL)),'follower_protocol');
   need(['CLOSED_CAPTURE_FOLLOWER','AUTHORED_OFFLINE_FIXTURE'].includes(a.inputMode)&&(!dev||a.inputMode==='AUTHORED_OFFLINE_FIXTURE'),'follower_input_mode');
   if(dev?.maxCycles!==undefined)need(Number.isSafeInteger(dev.maxCycles)&&dev.maxCycles>0,'fixture_cycles');
-  need(Number.isSafeInteger(a.firstEpoch)&&a.firstEpoch>=1&&realpathSync(a.sourceRoot)===a.sourceRoot,'follower_source');regularPin(a.sourceAdmission);
-  if(a.sourceCutover){const c=a.sourceCutover;need(Number.isSafeInteger(c.afterEpoch)&&c.afterEpoch>=a.firstEpoch&&realpathSync(c.sourceRoot)===c.sourceRoot&&c.sourceRoot!==a.sourceRoot,'follower_cutover');regularPin(c.sourceAdmission);
+  need(Number.isSafeInteger(a.firstEpoch)&&a.firstEpoch>=1&&realpathSync(a.sourceRoot)===a.sourceRoot,'follower_source');verifyPin(a.sourceAdmission);
+  if(a.sourceCutover){const c=a.sourceCutover;need(Number.isSafeInteger(c.afterEpoch)&&c.afterEpoch>=a.firstEpoch&&realpathSync(c.sourceRoot)===c.sourceRoot&&c.sourceRoot!==a.sourceRoot,'follower_cutover');verifyPin(c.sourceAdmission);
     need(!c.sourceRoot.startsWith(a.sourceRoot+path.sep)&&!a.sourceRoot.startsWith(c.sourceRoot+path.sep),'follower_cutover_alias');}
   if(a.payoutRegistry){need(a.sourceCutover,'payout_registry_requires_cutover');readPayoutRegistry(a.payoutRegistry);}
   if(a.standingPayoutRefresh){need(a.carryFrom.checkpoint?.mode!=='INCOMPLETE_EPOCH','standing_payout_requires_closed_prefix');standingPolicy(a.standingPayoutRefresh,a);}
@@ -604,7 +617,7 @@ export async function runPaperFollower(admissionFile:string,dev?:{maxCycles?:num
   need(!a.outputDirectory.startsWith(a.sourceRoot+path.sep)&&!a.sourceRoot.startsWith(a.outputDirectory+path.sep)&&a.sourceRoot!==a.outputDirectory,'follower_source_output_overlap');
   if(a.sourceCutover)need(!a.outputDirectory.startsWith(a.sourceCutover.sourceRoot+path.sep)&&!a.sourceCutover.sourceRoot.startsWith(a.outputDirectory+path.sep)&&a.sourceCutover.sourceRoot!==a.outputDirectory,'follower_source_output_overlap');
   for(const required of ['scripts/research/maker_fill_paper.ts','apps/worker/src/shadow/PaperMakerExecution.ts'])need(Object.keys(a.codeSha256).some(p=>path.resolve(p)===path.join(ROOT,required)),'follower_required_code_pin');
-  const verifyCode=()=>{for(const [p,h] of Object.entries(a.codeSha256))need(hash(readFileSync(p))===h,'follower_code_drift:'+p)};
+  const verifyCode=()=>{for(const [p,h] of Object.entries(a.codeSha256))need(hashFileSync(p)===h,'follower_code_drift:'+p)};
   verifyCode();verifyFollowerKernelLock(a.outputDirectory);mkdirSync(a.outputDirectory,{recursive:true,mode:0o700});need(realpathSync(a.outputDirectory)===a.outputDirectory,'follower_output_alias');
   const frozen=path.join(a.outputDirectory,'frozen-admission.json');if(existsSync(frozen)){ownedJSON(frozen);need(readFileSync(frozen).equals(raw),'follower_restart_admission');}else {const fd=openSync(frozen,'wx',0o600);try{writeFileSync(fd,raw);fsyncSync(fd)}finally{closeSync(fd)}syncDirectory(a.outputDirectory);}
   const seed=seedFollower(a),db=createPaperDatabase(seed.file);
@@ -631,13 +644,14 @@ export async function runPaperFollower(admissionFile:string,dev?:{maxCycles?:num
   db.exec('CREATE TABLE IF NOT EXISTS paper_consumed_epochs(epoch INTEGER PRIMARY KEY,source_sha TEXT NOT NULL,result_file TEXT NOT NULL,result_sha TEXT NOT NULL,disposition TEXT NOT NULL)');
 
   const previous=db.prepare("SELECT * FROM paper_consumed_epochs WHERE disposition='MODELLED' ORDER BY epoch DESC LIMIT 1").get() as any;
-  if(previous){need(hash(readFileSync(previous.result_file))===previous.result_sha,'published_epoch_changed');lastResult=ownedJSON(previous.result_file);lastModeledEpoch=previous.epoch;lastResultPath=previous.result_file;}
+  if(previous){need(hashFileSync(previous.result_file)===previous.result_sha,'published_epoch_changed');lastResult=retainedResultProjection(ownedJSON(previous.result_file));lastModeledEpoch=previous.epoch;lastResultPath=previous.result_file;}
   const lastClosed=db.prepare('SELECT * FROM paper_consumed_epochs ORDER BY epoch DESC LIMIT 1').get() as any;
   lastClosedEpoch=lastClosed?.epoch??a.carryFrom.lastEpoch;lastReceipt=lastClosed?.result_file??a.carryFrom.result.path;lastDisposition=lastClosed?.disposition??'CARRIED_CLOSED_ACCOUNT';
   payoutApplication=a.payoutRegistry?checkedPayoutApplication(db,a.payoutRegistry):null;
   if(existsSync(payoutReportFile))need(payoutApplication&&stableJSON(ownedJSON(payoutReportFile))===stableJSON(payoutApplication),'payout_application_conflict');
   else if(payoutApplication)immutable(payoutReportFile,payoutApplication);
   const standing=latestStandingPayout(db,a.outputDirectory);if(standing){payoutApplication=standing;payoutApplicationPath=standing.file;}
+  payoutApplication=retainedApplicationProjection(payoutApplication);
   } catch(error) {
     const failure:any=error instanceof Error?error:new Error(String(error));
     let account:ReturnType<typeof exactAccount>|null=null,accountReadError:string|null=null,cursors:any[]|null=null,cursorReadError:string|null=null;
@@ -669,7 +683,7 @@ export async function runPaperFollower(admissionFile:string,dev?:{maxCycles?:num
       actualRevenue:null,realizedVenueProfit:null,actualAccountChargesUSD:null,economicAdvantage:'NOT_ESTABLISHED',...extra};atomic(path.join(a.outputDirectory,'state.json'),lastState)};
   try{
     state('WAITING_CLOSED_SOURCE');while(!stopping&&(!dev?.maxCycles||cycles++<dev.maxCycles)){
-      verifyCode();regularPin(a.sourceAdmission);if(a.sourceCutover)regularPin(a.sourceCutover.sourceAdmission);if(a.payoutRegistry)readPayoutRegistry(a.payoutRegistry);verifyFollowerKernelLock(a.outputDirectory);const disk=statfsSync(a.outputDirectory,{bigint:true});need(disk.bavail*disk.bsize>=8589934592n,'disk_reserve');
+      verifyCode();verifyPin(a.sourceAdmission);if(a.sourceCutover)verifyPin(a.sourceCutover.sourceAdmission);if(a.payoutRegistry)readPayoutRegistry(a.payoutRegistry);verifyFollowerKernelLock(a.outputDirectory);const disk=statfsSync(a.outputDirectory,{bigint:true});need(disk.bavail*disk.bsize>=8589934592n,'disk_reserve');
       if(a.standingPayoutRefresh&&!stopping)await refreshHeldPayouts(db,a,dev?.payoutClock?.()??Date.now(),dev?.runPayoutCommand);
       const roots=a.sourceCutover?[{root:a.sourceRoot,min:a.firstEpoch,max:a.sourceCutover.afterEpoch},{root:a.sourceCutover.sourceRoot,min:a.sourceCutover.afterEpoch+1,max:Infinity}]:[{root:a.sourceRoot,min:a.firstEpoch,max:Infinity}];
       const epochs=roots.flatMap(r=>readdirSync(r.root).filter(n=>/^epoch-\d{6}$/.test(n)).map(n=>Number(n.slice(6))).filter(n=>n>=r.min&&n<=r.max)).sort((x,y)=>x-y);
@@ -677,14 +691,14 @@ export async function runPaperFollower(admissionFile:string,dev?:{maxCycles?:num
       let advanced=false,expected=a.firstEpoch;
       for(const n of epochs){if(stopping)break;const epoch=path.join(sourceRootFor(n),'epoch-'+String(n).padStart(6,'0')),summaryFile=path.join(epoch,'epoch-summary.json');if(n>expected||!existsSync(summaryFile))break;
        const consumed=db.prepare('SELECT * FROM paper_consumed_epochs WHERE epoch=?').get(n) as any;
-       if(consumed){need(hash(readFileSync(summaryFile))===consumed.source_sha&&hash(readFileSync(consumed.result_file))===consumed.result_sha,'consumed_epoch_changed');expected=n+1;continue;}
-       activeEpoch=n;if(a.carryFrom.checkpoint?.mode==='INCOMPLETE_EPOCH'&&n===a.carryFrom.checkpoint.resumeEpoch){regularPin(a.carryFrom.checkpoint.resumeSource.summary);regularPin(a.carryFrom.checkpoint.resumeSource.ledger);}
+       if(consumed){need(hashFileSync(summaryFile)===consumed.source_sha&&hashFileSync(consumed.result_file)===consumed.result_sha,'consumed_epoch_changed');expected=n+1;continue;}
+       activeEpoch=n;if(a.carryFrom.checkpoint?.mode==='INCOMPLETE_EPOCH'&&n===a.carryFrom.checkpoint.resumeEpoch){verifyPin(a.carryFrom.checkpoint.resumeSource.summary);verifyPin(a.carryFrom.checkpoint.resumeSource.ledger);}
        state('CHECKING_CLOSED_SOURCE');const eligibility=await structuralDisposition(epoch,config.topN);if(stopping)break;const sourceSha=eligibility.summarySha256;
        if(a.sourceCutover&&n===a.sourceCutover.afterEpoch+1){
         const priorEpoch=path.join(a.sourceRoot,'epoch-'+String(a.sourceCutover.afterEpoch).padStart(6,'0'));
-        const prior=db.prepare('SELECT * FROM paper_consumed_epochs WHERE epoch=?').get(a.sourceCutover.afterEpoch) as any;need(prior&&hash(readFileSync(path.join(priorEpoch,'epoch-summary.json')))===prior.source_sha,'follower_cutover_prior');
+        const prior=db.prepare('SELECT * FROM paper_consumed_epochs WHERE epoch=?').get(a.sourceCutover.afterEpoch) as any;need(prior&&hashFileSync(path.join(priorEpoch,'epoch-summary.json'))===prior.source_sha,'follower_cutover_prior');
         const old=await structuralDisposition(priorEpoch,config.topN),oldLedger=ownedJSON(path.join(priorEpoch,'source/ledger.json')),nextLedger=ownedJSON(path.join(epoch,'source/ledger.json'));
-        regularPin(a.sourceAdmission);regularPin(a.sourceCutover.sourceAdmission);
+        verifyPin(a.sourceAdmission);verifyPin(a.sourceCutover.sourceAdmission);
         const core=new PaperMakerExecution(db,FILL_POLICY,()=>nextLedger.startedAt);
         core.beginSourceClockOrigin({fromAdmissionSha256:a.sourceAdmission.sha256,toAdmissionSha256:a.sourceCutover.sourceAdmission.sha256,afterEpoch:a.sourceCutover.afterEpoch,firstEpoch:n,oldFinalReceipt:oldLedger.termination.at,newFirstReceipt:nextLedger.startedAt,oldSummarySha256:old.summarySha256,newLedgerSha256:eligibility.ledgerSha256});
         if(a.payoutRegistry){const registry=readPayoutRegistry(a.payoutRegistry);need(registry.observedReceiptUTC<=nextLedger.startedAt.utc,'payout_registry_not_yet_observed');
@@ -703,20 +717,20 @@ export async function runPaperFollower(admissionFile:string,dev?:{maxCycles?:num
             retained=db.prepare('SELECT * FROM paper_replay_payout_application WHERE registry_sha=?').get(a.payoutRegistry.sha256) as any;
           }
           const applied=checkedPayoutApplication(db,a.payoutRegistry,nextLedger.startedAt);need(applied,'payout_application_custody');
-          if(existsSync(payoutReportFile))need(stableJSON(ownedJSON(payoutReportFile))===stableJSON(applied),'payout_application_conflict');else immutable(payoutReportFile,applied);payoutApplication=applied;
+          if(existsSync(payoutReportFile))need(stableJSON(ownedJSON(payoutReportFile))===stableJSON(applied),'payout_application_conflict');else immutable(payoutReportFile,applied);payoutApplication=retainedApplicationProjection(applied);
         }
        }
-       if(a.standingPayoutRefresh&&!db.prepare('SELECT 1 FROM paper_replay_cursor WHERE epoch=?').get(epoch)){const applied=applyStandingPayouts(db,a,ownedJSON(path.join(epoch,'source/ledger.json')).startedAt);if(applied){payoutApplication=applied;payoutApplicationPath=applied.file;}}
+       if(a.standingPayoutRefresh&&!db.prepare('SELECT 1 FROM paper_replay_cursor WHERE epoch=?').get(epoch)){const applied=applyStandingPayouts(db,a,ownedJSON(path.join(epoch,'source/ledger.json')).startedAt);if(applied){payoutApplication=retainedApplicationProjection(applied);payoutApplicationPath=applied.file;}}
        const report=path.join(a.outputDirectory,'epoch-'+String(n).padStart(6,'0')+'.json');let result:any,disposition:string;
        if(eligibility.reason){disposition='SKIP_MODEL_SOURCE_INELIGIBLE';result={schema:'PAPER_FOLLOWER_SOURCE_INELIGIBLE_V1',disposition,epoch,reason:eligibility.reason,detail:eligibility.detail,source:eligibility,
          accountUnchanged:exactAccount(db),modelNetPnlUSDC:null,reward:null,actualRevenue:null,sourceCaptureDuplicated:false};}
        else{disposition='MODELLED';state('REPLAYING_CLOSED_SOURCE');dev?.beforeReplay?.(n);result=await replayPaperEpoch(epoch,db,config,logger,{afterCommit:state=>dev?.afterReplayCommit?.(n,state)});}
        result.sourceClockOrigins=db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_execution_clock_origins'").get()?db.prepare('SELECT payload FROM paper_execution_clock_origins ORDER BY sequence').all().map((r:any)=>JSON.parse(r.payload)):[];
-       verifyCode();need(hash(readFileSync(summaryFile))===sourceSha,'closed_source_mutated');
+       verifyCode();need(hashFileSync(summaryFile)===sourceSha,'closed_source_mutated');
        if(existsSync(report)){const original=ownedJSON(report);need(stableJSON(economicProjection(original))===stableJSON(economicProjection(result)),'existing_epoch_projection_conflict');}
        else immutable(report,result);
-       dev?.afterReportPublished?.(n);db.prepare('INSERT INTO paper_consumed_epochs VALUES(?,?,?,?,?)').run(n,sourceSha,report,hash(readFileSync(report)),disposition);
-       if(disposition==='MODELLED'){lastResult=ownedJSON(report);lastModeledEpoch=n;lastResultPath=report;}
+       dev?.afterReportPublished?.(n);db.prepare('INSERT INTO paper_consumed_epochs VALUES(?,?,?,?,?)').run(n,sourceSha,report,hashFileSync(report),disposition);
+       if(disposition==='MODELLED'){lastResult=retainedResultProjection(ownedJSON(report));lastModeledEpoch=n;lastResultPath=report;}
        lastClosedEpoch=n;lastReceipt=report;lastDisposition=disposition;
        state(disposition==='MODELLED'?'COMPLETED_EPOCH':'SKIPPED_MODEL_SOURCE_INELIGIBLE',{lastDisposition:disposition,lastClosedEpoch:n,lastReceipt:report,sourceBoundary:result.sourceBoundary??null});advanced=true;expected=n+1;
        if(a.standingPayoutRefresh&&!stopping)await refreshHeldPayouts(db,a,dev?.payoutClock?.()??Date.now(),dev?.runPayoutCommand);

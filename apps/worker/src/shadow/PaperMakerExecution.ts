@@ -73,6 +73,8 @@ export class PaperMakerExecution {
    CREATE TRIGGER IF NOT EXISTS paper_execution_fill_delete BEFORE DELETE ON shadow_fills BEGIN SELECT RAISE(ABORT,'paper_execution:immutable_fill'); END;`);
   this.corroborate();
  }
+ /** End only the in-memory source lifetime. Persisted account/queue/cursor state is untouched. */
+ releaseSourceContext(){this.books.clear();this.clock=()=>{throw Error('paper_execution:source_context_released')};}
  private corroborate(){
   const fills=this.db.prepare('SELECT f.*,o.side,o.token_id FROM shadow_fills f JOIN shadow_orders o ON o.id=f.order_id ORDER BY f.id').all() as Row[];
   let cash=units(this.policy.openingCash)*S;const positions:Record<string,bigint>={};

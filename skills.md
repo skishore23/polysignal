@@ -256,3 +256,16 @@ maker_fill_payout_cli include real production Python entries under an authored
 socket-denying harness. Legacy allocation/source tests and strict types remain.
 Never relabel pending payout, unsupported quantity, unknown invoices or actual
 redemption gas as zero. Compact state links exact refresh evidence and reasons.
+
+
+## V5 memory verification and clock ownership
+
+`maker_fill_paper.ts` uses streaming fresh file digests for verification and a
+compact retained valuation for state; full report parsing/validation/publication
+semantics remain. `PaperMakerExecution.releaseSourceContext` breaks completed
+replay closure retention and protects active replacement clock registration
+from a superseded core's double release. Reopen the core normally before SQL
+clock use. Tests in maker_fill_memory exercise chunk/empty/mutation hashes,
+retained projection, WeakRef/GC liveness, paired preserved-V4 full outputs and
+follower restart integrity. The isolated hash RSS probe is not a full-service
+memory guarantee; monitor actual native tree RSS and preserve guard failures.
