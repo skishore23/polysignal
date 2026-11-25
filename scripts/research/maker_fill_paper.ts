@@ -27,12 +27,14 @@ export const FILL_POLICY: PaperMakerPolicy = {
   maxInventoryShares: '200', submitLatencyMs: 100, cancelLatencyMs: 0, feeModel: 'paper-maker-zero-fee-v1',
 };
 export const FILL_PROTOCOL = {
-  schema: 'CONSERVING_CAUSAL_CAPTURE_PAPER_V2', mode: 'CAUSAL_CAPTURE_REPLAY_PAPER',
+  schema: 'CONSERVING_CAUSAL_CAPTURE_PAPER_V3', mode: 'CAUSAL_CAPTURE_REPLAY_PAPER',
   policy: FILL_POLICY, quoteIntervalMs: 1000, ttlMs: 5000, seed: 3737,
   queue: 'Conservative per-arrival cohorts: same-clock/source initial orders share displayed ahead; later arrivals inherit max visible/prior unconsumed external barrier. Pending visible-depth maxima and last causally known fresh book validate +100ms activation. Crossed/stale activation is rejected without retrospective uncrossing. Only opposite same-price prints deplete barriers and own FIFO orders; one conserved print budget.',
   duplicates: 'Existing source decoder refuses ambiguous repeated original trade tuples; identical committed trade id is a no-op; changed economics fails',
   timing: 'Recorded callback order; submit100ms, cancel0ms are model assumptions, not venue latency measurements',
   clockRoles: 'Activation-book receipt <= activation <= eligible print venue <= print receipt. Independently fresh current book may have a later venue timestamp; it cannot retroactively certify activation. Keep per-print venue watermark, UTC/monotonic activation, expiry and cancellation guards.',
+  settlement: 'Only an explicit independently reviewed observed binary-payout registry at the source-origin boundary can credit whole held positions, with zero active obligations and exact microcollateral representability. Named zero-redemption-cost paper scenario; actual redemption/gas remain unknown. No retrospective credit.',
+  printApplicability: 'The core1000ms execution-age guard stays strict. A schema-valid public observation older than1000ms is atomically recorded as a refusal, never allocated or used to advance an execution watermark. Invalid/future/other guard failures remain errors.',
   fills: 'SIMULATED, supported by original-token public prints under the named queue model; never observed maker execution',
   ordinaryPolicy: 'Existing MakerLoop, canonical features/microstructure belief/regime; funded bids and held-inventory asks',
   fee: 'Named zero-maker-fee paper scenario; rebate0; no claimed paid fee or actual revenue',
@@ -41,10 +43,19 @@ export const FILL_PROTOCOL = {
   inference: 'Engineering and model-defined paper accounting only; no novelty, discovery, learning, unseen transfer, or economic advantage',
 } as const;
 
-export function applyOriginalPrint(execution: PaperMakerExecution, event: any, identity: { token: string; condition: string }, at: PaperClock) {
+export function applyOriginalPrint(execution: PaperMakerExecution, event: any, identity: { token: string; condition: string }, at: PaperClock, sourceFrameSha256: string | null = null) {
   if (event.event_type !== 'last_trade_price' || event.asset_id !== identity.token || event.market !== identity.condition) return null;
   const sourceId = hash(JSON.stringify([identity.token, Number(event.timestamp), event.side, decimal(event.price).toString(), decimal(event.size).toString(), event.transaction_hash ?? null]));
-  return execution.processTrade({ sourceId, token: identity.token, side: event.side, price: String(event.price), size: String(event.size), at, venueUtc: Number(event.timestamp) });
+  const venueUtc=Number(event.timestamp);
+  try {return execution.processTrade({sourceId,token:identity.token,side:event.side,price:String(event.price),size:String(event.size),at,venueUtc});}
+  catch(error){
+    // Reaching this exact guard proves earlier core value/book checks passed.
+    // This is an observed old print, not an executable present opportunity.
+    if(error instanceof Error&&error.message==='paper_execution:trade_clock'&&Number.isSafeInteger(venueUtc)&&venueUtc<=at.utc&&at.utc-venueUtc>1000)
+      return {modelRefusal:true as const,reason:'STALE_PUBLIC_PRINT' as const,sourceId,token:identity.token,condition:identity.condition,
+        venueUtc,at:{...at},ageMs:at.utc-venueUtc,event:structuredClone(event),sourceFrameSha256};
+    throw error;
+  }
 }
 
 /** Warm decoding may restore in-memory book custody, never recommit activation/account changes. */
@@ -64,6 +75,7 @@ export class PaperFillSession {
   private terms = new Map<string, any>();
   constructor(readonly db: Database.Database, config: any, readonly clock: () => PaperClock, logger: any) {
     this.execution = new PaperMakerExecution(db, FILL_POLICY, clock);
+    db.exec('CREATE TABLE IF NOT EXISTS paper_replay_print_refusals(epoch TEXT NOT NULL,source_id TEXT NOT NULL,payload_json TEXT NOT NULL,PRIMARY KEY(epoch,source_id))');
     for (const row of db.prepare("SELECT payload_json FROM clob_events WHERE conn_id='isolated-startup-capture'").all() as any[]) {
       const t = JSON.parse(row.payload_json); this.seen.add(t.rawSha256 + ':' + t.venueUtc + ':' + t.token);
     }
@@ -290,7 +302,13 @@ export async function replayPaperEpoch(epoch: string, db: Database.Database, con
           await commit(() => {
             observe();
             if (!status.fresh || status.bookInvalidation || !book) { session!.cancelAll(at); return; }
-            for (const e of events) applyOriginalPrint(session!.execution, e, d.identity, at);
+            for (const e of events){const applied=applyOriginalPrint(session!.execution,e,d.identity,at,frame.sha256);
+              if(applied&&'modelRefusal' in applied){
+                const previous=db.prepare('SELECT payload_json FROM paper_replay_print_refusals WHERE epoch=? AND source_id=?').get(epoch,applied.sourceId) as any;
+                if(previous)need(stableJSON(JSON.parse(previous.payload_json))===stableJSON(applied),'print_refusal_identity_conflict');
+                else db.prepare('INSERT INTO paper_replay_print_refusals VALUES(?,?,?)').run(epoch,applied.sourceId,JSON.stringify(applied));
+              }
+            }
           }, () => { if (book && status.fresh && !status.bookInvalidation) restorePaperBook(db, session!.execution, book); }, events.some((e: any) => e.event_type === 'last_trade_price'));
         }
       }
@@ -316,6 +334,7 @@ export async function replayPaperEpoch(epoch: string, db: Database.Database, con
       terminal, markouts, terminalNoSettlementPnlBoundsUSDC: {
         lower: cashText(exactCash - 100n * SCALE * SCALE), upper: cashText(exactCash + held * SCALE - 100n * SCALE * SCALE),
         meaning: 'Model cash plus binary holdings valued in [0,1]; not a settlement forecast or realized profit' },
+      printRefusals: db.prepare('SELECT * FROM paper_replay_print_refusals WHERE epoch=? ORDER BY rowid').all(epoch),
       fills: db.prepare('SELECT * FROM shadow_fills ORDER BY id').all(), accountingEvents: db.prepare('SELECT * FROM accounting_events ORDER BY id').all(),
       resources: { cpuMicroseconds: process.cpuUsage(cpu), wallMilliseconds: performance.now() - started, nestedInHostReceipt: true },
       actualAccountChargesUSD: null, actualRevenue: null, realizedVenueProfit: null, economicAdvantage: 'NOT_ESTABLISHED' };
@@ -355,14 +374,18 @@ export async function runFrozenPaperReplay(admissionFile: string) {
 
 
 type FilePin = {path:string;sha256:string};
-export type FollowerCarry = {database:FilePin;result:FilePin;review:FilePin;lastEpoch:number};
+export type IncompleteFollowerCheckpoint = {mode:'INCOMPLETE_EPOCH';receipt:FilePin;resumeEpoch:number;lastModeledEpoch:number;resumeSource:{summary:FilePin;ledger:FilePin}};
+export type FollowerCarry = {database:FilePin;result:FilePin;review:FilePin;lastEpoch:number;checkpoint?:IncompleteFollowerCheckpoint};
+export type FollowerSourceCutover = {afterEpoch:number;sourceRoot:string;sourceAdmission:FilePin};
 export type FollowerAdmission = {schema:'CONSERVING_PAPER_FOLLOWER_ADMISSION_V2';protocolSha256:string;
   inputMode:'CLOSED_CAPTURE_FOLLOWER'|'AUTHORED_OFFLINE_FIXTURE';codeSha256:Record<string,string>;
-  sourceRoot:string;firstEpoch:number;sourceAdmission:FilePin;carryFrom:FollowerCarry;
+  sourceRoot:string;firstEpoch:number;sourceAdmission:FilePin;carryFrom:FollowerCarry;sourceCutover?:FollowerSourceCutover;payoutRegistry?:FilePin;
   outputDirectory:string;reviewFile:string;reviewSha256:string};
-export const FOLLOWER_PROTOCOL={schema:'CONSERVING_PAPER_FOLLOWER_DRIVER_V2',paper:FILL_PROTOCOL,
-  account:'mandatory independently checked closed seed; copy once, preserve exact cash/holdings/cursor, no refund or reset',
+export const FOLLOWER_PROTOCOL={schema:'CONSERVING_PAPER_FOLLOWER_DRIVER_V3',paper:FILL_PROTOCOL,
+  account:'mandatory independently checked closed DB: terminal account or explicitly reviewed incomplete-epoch checkpoint; copy once, preserve exact cash/holdings/orders/reservations/cursor/RNG, no refund or reset',
+  sourceCutover:'optional single pinned epoch boundary; consume every old epoch first, no active orders at origin change, persist raw new process mono origin with nondecreasing UTC; no clock offsets',
   reports:'immutable per-epoch receipts, restart compares complete source/economic projection excluding measured resources only',
+  payoutCustody:'boundary application JSON/SHA and exact canonical prefix commit atomically with settlement; warm restart verifies retained boundary evidence and never revalues it from current funds',
   selection:'all ascending closed captures from last carried epoch+1; explicit structural-ineligible receipts are not rewards',
   waiting:'retain last source-as-of account/valuation, incomplete PnL remains null',sourceCaptureDuplicated:false} as const;
 function regularPin(pin:FilePin){need(pin&&typeof pin.path==='string'&&/^[a-f0-9]{64}$/.test(pin.sha256),'file_pin');
@@ -390,6 +413,9 @@ function exactAccount(db:Database.Database){
   let reserved=0n;const sells:Record<string,bigint>={};for(const r of db.prepare("SELECT * FROM paper_execution_orders WHERE status='ACTIVE'").all() as any[]){if(r.side==='BUY')reserved+=decimal(r.price)*decimal(r.remaining);else sells[r.token]=(sells[r.token]??0n)+decimal(r.remaining);}
   return {cashUSDC:cashText(BigInt(account.cash)),heldShares:shares,reservedBuyUSDC:cashText(reserved),reservedSellShares:Object.fromEntries(Object.entries(sells).map(([k,n])=>[k,`${n/SCALE}.${(n%SCALE).toString().padStart(9,'0')}`])),ledgerLastTradeUTC:account.last_utc};
 }
+export function isStructuralSourceIneligible(error:unknown){
+  return error instanceof Error&&['maker_source:empty_book_side','fill_paper:original_market_missing','maker_source:validated_initial_snapshot_unavailable','maker_source:validated_rest_tick_mismatch','maker_source:validated_metadata_tick_mismatch','maker_source:tick_or_minimum','maker_source:book_market_limits'].includes(error.message);
+}
 async function structuralDisposition(epoch:string,topN:number){
   need(realpathSync(epoch)===epoch,'closed_source_alias');
   const summary=ownedJSON(path.join(epoch,'epoch-summary.json'));
@@ -401,18 +427,46 @@ async function structuralDisposition(epoch:string,topN:number){
   if(!reason){try{const input=metadata(epoch,ledger,topN),source=createOperatingSourceState(input,{maxTradesPerSlot:20000});
     const dynamic=new Set(['FRESH_AUTHORITATIVE_ORIGINAL_BOOK','CURRENT_CANONICAL_FEATURE_SAMPLE','OBSERVED_VOLATILITY_HISTORY','OBSERVED_ORIGINAL_TOKEN_TRADE_FLOW']);
     const missing=source.snapshot(input.decision).missing.filter(r=>!dynamic.has(r));if(missing.length){reason='STATIC_MODEL_INPUTS_MISSING';detail=missing;}
-   }catch(error){const message=String(error);const known=['maker_source:empty_book_side','fill_paper:original_market_missing','maker_source:validated_initial_snapshot_unavailable','maker_source:validated_rest_tick_mismatch','maker_source:tick_or_minimum','maker_source:book_market_limits'];
-    if(known.some(x=>message==='Error: '+x)){reason='STRUCTURAL_SOURCE_TERMS_INELIGIBLE';detail=message;}else throw error;
+   }catch(error){if(isStructuralSourceIneligible(error)){reason='STRUCTURAL_SOURCE_TERMS_INELIGIBLE';detail=String(error);}else throw error;
    }}
   if(!reason&&archive.messages===0)reason='NO_DATA_STREAM';
   return {reason,detail,archive,summarySha256:hash(readFileSync(path.join(epoch,'epoch-summary.json'))),ledgerSha256:hash(readFileSync(path.join(epoch,'source/ledger.json')))};
 }
+function readPayoutRegistry(pin:FilePin){const registry=JSON.parse(regularPin(pin).toString()),result=JSON.parse(regularPin(registry.sourceResult).toString()),review=JSON.parse(regularPin(registry.sourceReview).toString());
+  need(registry.schema==='PAPER_OBSERVED_BINARY_PAYOUT_REGISTRY_V1'&&registry.costScenario==='paper-zero-redemption-cost-v1'&&Number.isSafeInteger(registry.observedReceiptUTC)&&registry.observedReceiptUTC>=0,'payout_registry');
+  need(result.schema==='PAPER_CTF_CHECKPOINT_VALUATION_V1'&&result.completeHeldPositionValuation===true&&result.accountCashCredited===false&&review.verified===true&&review.resultSha256===registry.sourceResult.sha256,'payout_registry_source');
+  need(Array.isArray(registry.entries)&&registry.entries.length===4&&new Set(registry.entries.map((e:any)=>e.token)).size===4,'payout_registry_entries');
+  for(const e of registry.entries){need(typeof e.token==='string'&&/^\d+$/.test(e.token)&&typeof e.market==='string'&&e.market.length>0&&typeof e.condition==='string'&&/^0x[a-fA-F0-9]{64}$/.test(e.condition)&&(e.payout===0||e.payout===1),'payout_registry_entry');
+    const original=result.positions.find((p:any)=>p.token===e.token&&p.condition===e.condition),vector=result.providers?.[0]?.vectors?.[e.condition];
+    need(original&&vector?.status==='FINALIZED_PROVIDER_ATTESTED'&&/^[1-9]\d*$/.test(vector.denominator)&&Array.isArray(vector.numerators)&&vector.numerators.length===2&&vector.numerators[0]===String(BigInt(vector.denominator)*BigInt(e.payout)),'payout_registry_original_binding');
+  }return registry;
+}
+function checkedPayoutApplication(db:Database.Database,registry:FilePin,at?:PaperClock){
+  if(!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_replay_payout_application'").get())return null;
+  const retained=db.prepare('SELECT * FROM paper_replay_payout_application WHERE registry_sha=?').get(registry.sha256) as any;if(!retained)return null;
+  need(hash(retained.payload_json)===retained.payload_sha,'payout_application_custody');const applied=JSON.parse(retained.payload_json);
+  need(applied.schema==='PAPER_OBSERVED_PAYOUT_APPLICATION_V2'&&stableJSON(applied.registry)===stableJSON(registry)&&(!at||stableJSON(applied.at)===stableJSON(at))&&applied.costScenario==='paper-zero-redemption-cost-v1','payout_application_binding');
+  const settlements=(db.prepare('SELECT * FROM paper_execution_settlements ORDER BY rowid').all() as any[]).filter(r=>JSON.parse(r.payload).registrySha256===registry.sha256);
+  need(stableJSON(applied.terminal.snapshot.settlements)===stableJSON(settlements),'payout_application_settlements');
+  const prefix=applied.canonicalPrefix;need(Array.isArray(prefix)&&prefix.length>0&&Number.isSafeInteger(prefix[prefix.length-1].id),'payout_application_canonical_prefix');
+  need(stableJSON(db.prepare('SELECT * FROM accounting_events WHERE id<=? ORDER BY id').all(prefix[prefix.length-1].id))===stableJSON(prefix),'payout_application_canonical_prefix');return applied;
+}
 function seedFollower(a:FollowerAdmission){
   need(a.carryFrom&&Number.isSafeInteger(a.carryFrom.lastEpoch)&&a.carryFrom.lastEpoch>=1&&a.firstEpoch===a.carryFrom.lastEpoch+1,'follower_carry_lineage');
   const seedRaw=regularPin(a.carryFrom.database),resultRaw=regularPin(a.carryFrom.result),review=JSON.parse(regularPin(a.carryFrom.review).toString());
-  const result=JSON.parse(resultRaw.toString());need(result.schema==='CONSERVING_PAPER_EPOCH_RESULT_V1'&&result.epoch===path.join(a.sourceRoot,'epoch-'+String(a.carryFrom.lastEpoch).padStart(6,'0')),'follower_carry_result_lineage');
-  need(review.decision==='APPROVE_PAPER_FOLLOWER_CARRY_FROM_CLOSED_ACCOUNT'&&review.databaseClosed===true&&review.lastEpoch===a.carryFrom.lastEpoch&&review.paperProtocolSha256===hash(JSON.stringify(FILL_PROTOCOL))
-    &&stableJSON(review.database)===stableJSON(a.carryFrom.database)&&stableJSON(review.result)===stableJSON(a.carryFrom.result),'follower_carry_review');
+  const checkpoint=a.carryFrom.checkpoint;
+  const modeledEpoch=checkpoint?.lastModeledEpoch??a.carryFrom.lastEpoch;
+  const result=JSON.parse(resultRaw.toString());need(Number.isSafeInteger(modeledEpoch)&&modeledEpoch>=1&&modeledEpoch<=a.carryFrom.lastEpoch&&result.schema==='CONSERVING_PAPER_EPOCH_RESULT_V1'&&result.epoch===path.join(a.sourceRoot,'epoch-'+String(modeledEpoch).padStart(6,'0')),'follower_carry_result_lineage');
+  need(review.decision===(checkpoint?'APPROVE_PAPER_FOLLOWER_CARRY_FROM_INCOMPLETE_CHECKPOINT':'APPROVE_PAPER_FOLLOWER_CARRY_FROM_CLOSED_ACCOUNT')&&review.databaseClosed===true&&review.lastEpoch===a.carryFrom.lastEpoch&&review.paperProtocolSha256===hash(JSON.stringify(FILL_PROTOCOL))
+    &&stableJSON(review.database)===stableJSON(a.carryFrom.database)&&stableJSON(review.result)===stableJSON(a.carryFrom.result)&&stableJSON(review.checkpoint)===stableJSON(checkpoint),'follower_carry_review');
+  let checkpointReceipt:any=null;
+  if(checkpoint){need(checkpoint.mode==='INCOMPLETE_EPOCH'&&checkpoint.resumeEpoch===a.firstEpoch,'follower_checkpoint_lineage');
+    const epoch=path.join(a.sourceRoot,'epoch-'+String(a.firstEpoch).padStart(6,'0'));
+    need(checkpoint.resumeSource.summary.path===path.join(epoch,'epoch-summary.json')&&checkpoint.resumeSource.ledger.path===path.join(epoch,'source/ledger.json'),'follower_checkpoint_source');
+    regularPin(checkpoint.resumeSource.summary);regularPin(checkpoint.resumeSource.ledger);checkpointReceipt=JSON.parse(regularPin(checkpoint.receipt).toString());
+    need(checkpointReceipt.schema==='PAPER_FOLLOWER_RECOVERABLE_FAILURE_V2'&&checkpointReceipt.activeEpoch===a.firstEpoch&&checkpointReceipt.lastModeledEpoch===modeledEpoch&&checkpointReceipt.complete===false
+      &&checkpointReceipt.paperCheckpoint?.status==='INCOMPLETE_RECOVERABLE'&&checkpointReceipt.paperCheckpoint.epoch===epoch&&checkpointReceipt.paperCheckpoint.terminalComplete===false,'follower_checkpoint_receipt');
+  }
   for(const suffix of ['-wal','-journal'])need(!existsSync(a.carryFrom.database.path+suffix)||statSync(a.carryFrom.database.path+suffix).size===0,'seed_database_not_closed');
   const file=path.join(a.outputDirectory,'paper.sqlite'),receipt=path.join(a.outputDirectory,'carry-receipt.json');
   if(!existsSync(file)){need(!existsSync(receipt),'seed_database_missing');const tmp=file+'.'+randomUUID()+'.seed';copyFileSync(a.carryFrom.database.path,tmp,constants.COPYFILE_EXCL);
@@ -423,32 +477,47 @@ function seedFollower(a:FollowerAdmission){
   const accountProof=path.join(a.outputDirectory,'carry-account-proof.json');
   if(existsSync(accountProof))need(stableJSON(ownedJSON(accountProof).carryFrom)===stableJSON(a.carryFrom),'carry_account_proof_changed');
   else need(hash(readFileSync(file))===a.carryFrom.database.sha256,'unverified_carried_account_changed');
-  return {file,result,accountProof,needsAccountProof:!existsSync(accountProof)};
+  return {file,result,accountProof,checkpointReceipt,needsAccountProof:!existsSync(accountProof)};
 }
 /** Follows closed captures only. It never starts a source connection or funds a new account. */
-export async function runPaperFollower(admissionFile:string,dev?:{maxCycles?:number;wait?:(ms:number)=>Promise<void>;afterReportPublished?:(epoch:number)=>void;beforeReplay?:(epoch:number)=>void}){
+export async function runPaperFollower(admissionFile:string,dev?:{maxCycles?:number;wait?:(ms:number)=>Promise<void>;afterReportPublished?:(epoch:number)=>void;beforeReplay?:(epoch:number)=>void;afterReplayCommit?:(epoch:number,state:{ordinal:number;at:PaperClock;randomState:number})=>void}){
   const raw=readFileSync(admissionFile),a:FollowerAdmission=JSON.parse(raw.toString());
   need(a.schema==='CONSERVING_PAPER_FOLLOWER_ADMISSION_V2'&&a.protocolSha256===hash(JSON.stringify(FOLLOWER_PROTOCOL)),'follower_protocol');
   need(['CLOSED_CAPTURE_FOLLOWER','AUTHORED_OFFLINE_FIXTURE'].includes(a.inputMode)&&(!dev||a.inputMode==='AUTHORED_OFFLINE_FIXTURE'),'follower_input_mode');
   if(dev?.maxCycles!==undefined)need(Number.isSafeInteger(dev.maxCycles)&&dev.maxCycles>0,'fixture_cycles');
   need(Number.isSafeInteger(a.firstEpoch)&&a.firstEpoch>=1&&realpathSync(a.sourceRoot)===a.sourceRoot,'follower_source');regularPin(a.sourceAdmission);
+  if(a.sourceCutover){const c=a.sourceCutover;need(Number.isSafeInteger(c.afterEpoch)&&c.afterEpoch>=a.firstEpoch&&realpathSync(c.sourceRoot)===c.sourceRoot&&c.sourceRoot!==a.sourceRoot,'follower_cutover');regularPin(c.sourceAdmission);
+    need(!c.sourceRoot.startsWith(a.sourceRoot+path.sep)&&!a.sourceRoot.startsWith(c.sourceRoot+path.sep),'follower_cutover_alias');}
+  if(a.payoutRegistry){need(a.sourceCutover,'payout_registry_requires_cutover');readPayoutRegistry(a.payoutRegistry);}
   const review=JSON.parse(regularPin({path:a.reviewFile,sha256:a.reviewSha256}).toString());
   need(review.decision==='APPROVE_CONSERVING_CAPTURE_FOLLOWER_PAPER_OPERATION'&&review.protocolSha256===a.protocolSha256&&review.inputMode===a.inputMode
     &&review.sourceRoot===a.sourceRoot&&review.firstEpoch===a.firstEpoch&&review.outputDirectory===a.outputDirectory&&stableJSON(review.codeSha256)===stableJSON(a.codeSha256)
-    &&stableJSON(review.sourceAdmission)===stableJSON(a.sourceAdmission)&&stableJSON(review.carryFrom)===stableJSON(a.carryFrom),'follower_review');
+    &&stableJSON(review.sourceAdmission)===stableJSON(a.sourceAdmission)&&stableJSON(review.carryFrom)===stableJSON(a.carryFrom)&&stableJSON(review.sourceCutover)===stableJSON(a.sourceCutover)&&stableJSON(review.payoutRegistry)===stableJSON(a.payoutRegistry),'follower_review');
   need(!a.outputDirectory.startsWith(a.sourceRoot+path.sep)&&!a.sourceRoot.startsWith(a.outputDirectory+path.sep)&&a.sourceRoot!==a.outputDirectory,'follower_source_output_overlap');
+  if(a.sourceCutover)need(!a.outputDirectory.startsWith(a.sourceCutover.sourceRoot+path.sep)&&!a.sourceCutover.sourceRoot.startsWith(a.outputDirectory+path.sep)&&a.sourceCutover.sourceRoot!==a.outputDirectory,'follower_source_output_overlap');
   for(const required of ['scripts/research/maker_fill_paper.ts','apps/worker/src/shadow/PaperMakerExecution.ts'])need(Object.keys(a.codeSha256).some(p=>path.resolve(p)===path.join(ROOT,required)),'follower_required_code_pin');
   const verifyCode=()=>{for(const [p,h] of Object.entries(a.codeSha256))need(hash(readFileSync(p))===h,'follower_code_drift:'+p)};
   verifyCode();verifyFollowerKernelLock(a.outputDirectory);mkdirSync(a.outputDirectory,{recursive:true,mode:0o700});need(realpathSync(a.outputDirectory)===a.outputDirectory,'follower_output_alias');
   const frozen=path.join(a.outputDirectory,'frozen-admission.json');if(existsSync(frozen)){ownedJSON(frozen);need(readFileSync(frozen).equals(raw),'follower_restart_admission');}else {const fd=openSync(frozen,'wx',0o600);try{writeFileSync(fd,raw);fsyncSync(fd)}finally{closeSync(fd)}syncDirectory(a.outputDirectory);}
   const seed=seedFollower(a),db=createPaperDatabase(seed.file);
-  let config:any,lastResult:any,lastModeledEpoch=a.carryFrom.lastEpoch,lastResultPath=a.carryFrom.result.path;
+  let config:any,lastResult:any,lastModeledEpoch=a.carryFrom.checkpoint?.lastModeledEpoch??a.carryFrom.lastEpoch,lastResultPath=a.carryFrom.result.path;
   let lastClosedEpoch=a.carryFrom.lastEpoch,lastReceipt=a.carryFrom.result.path,lastDisposition='CARRIED_CLOSED_ACCOUNT';
+  const payoutReportFile=path.join(a.outputDirectory,'observed-payout-application.json');let payoutApplication:any=null;
   try {
   config=JSON.parse(readFileSync(path.join(ROOT,'configs/worker.json'),'utf8'));
   lastResult=seed.result;
-  if(seed.needsAccountProof){const initial=exactAccount(db);need(seed.result?.terminal?.snapshot&&seed.result.terminal.snapshot.cashUSDC===initial.cashUSDC&&stableJSON(seed.result.terminal.snapshot.shares)===stableJSON(initial.heldShares)&&initial.reservedBuyUSDC==='0.000000000000000000'&&Object.values(initial.reservedSellShares).every(v=>decimal(v)===0n),'carried_result_account_mismatch');
-  need((db.prepare("SELECT COUNT(*) n FROM shadow_orders WHERE status IN ('OPEN','PARTIAL','PENDING')").get() as any).n===0,'carried_open_orders');
+  if(seed.needsAccountProof){const initial=exactAccount(db);
+   if(a.carryFrom.checkpoint){const cp=seed.checkpointReceipt,expected=cp.paperCheckpoint.accountState;
+    need(expected&&stableJSON(initial)===stableJSON(cp.account)&&expected.cashUSDC===initial.cashUSDC&&stableJSON(expected.shares)===stableJSON(initial.heldShares)&&expected.reservedBuyUSDC===initial.reservedBuyUSDC&&stableJSON(expected.reservedSellShares)===stableJSON(initial.reservedSellShares),'carried_checkpoint_account_mismatch');
+    if(expected.settlements!==undefined)need(stableJSON(db.prepare('SELECT * FROM paper_execution_settlements ORDER BY rowid').all())===stableJSON(expected.settlements),'carried_checkpoint_settlements');
+    const tables=[['orders','SELECT * FROM shadow_orders ORDER BY id'],['queues','SELECT * FROM paper_execution_queues ORDER BY token,side,price'],['trades','SELECT * FROM paper_execution_trades ORDER BY rowid'],['allocations','SELECT * FROM paper_execution_allocations ORDER BY rowid']];
+    for(const [key,sql] of tables)need(stableJSON(db.prepare(sql!).all())===stableJSON(expected[key!]),'carried_checkpoint_state_mismatch:'+key);
+    const cursors=db.prepare('SELECT * FROM paper_replay_cursor ORDER BY epoch').all();need(stableJSON(cursors)===stableJSON(cp.committedCursors),'carried_checkpoint_cursors');
+    const cursor=db.prepare('SELECT * FROM paper_replay_cursor WHERE epoch=?').get(cp.paperCheckpoint.epoch);need(stableJSON(cursor)===stableJSON(cp.paperCheckpoint.committedCursor)&&Number.isSafeInteger((cursor as any)?.ordinal)&&Number.isSafeInteger((cursor as any)?.random_state),'carried_checkpoint_cursor');
+    const closed=db.prepare('SELECT * FROM paper_consumed_epochs ORDER BY epoch DESC LIMIT 1').get() as any,modeled=db.prepare("SELECT * FROM paper_consumed_epochs WHERE disposition='MODELLED' ORDER BY epoch DESC LIMIT 1").get() as any;
+    need(closed?.epoch===a.carryFrom.lastEpoch&&modeled?.epoch===a.carryFrom.checkpoint.lastModeledEpoch&&modeled.result_file===a.carryFrom.result.path&&modeled.result_sha===a.carryFrom.result.sha256,'carried_checkpoint_consumption');
+   }else{need(seed.result?.terminal?.snapshot&&seed.result.terminal.snapshot.cashUSDC===initial.cashUSDC&&stableJSON(seed.result.terminal.snapshot.shares)===stableJSON(initial.heldShares)&&initial.reservedBuyUSDC==='0.000000000000000000'&&Object.values(initial.reservedSellShares).every(v=>decimal(v)===0n),'carried_result_account_mismatch');
+    need((db.prepare("SELECT COUNT(*) n FROM shadow_orders WHERE status IN ('OPEN','PARTIAL','PENDING')").get() as any).n===0,'carried_open_orders');}
    immutable(seed.accountProof,{schema:'VERIFIED_INITIAL_CARRY_ACCOUNT_V1',carryFrom:a.carryFrom,account:initial,openingNotRepeated:true});}
   db.exec('CREATE TABLE IF NOT EXISTS paper_consumed_epochs(epoch INTEGER PRIMARY KEY,source_sha TEXT NOT NULL,result_file TEXT NOT NULL,result_sha TEXT NOT NULL,disposition TEXT NOT NULL)');
 
@@ -456,6 +525,9 @@ export async function runPaperFollower(admissionFile:string,dev?:{maxCycles?:num
   if(previous){need(hash(readFileSync(previous.result_file))===previous.result_sha,'published_epoch_changed');lastResult=ownedJSON(previous.result_file);lastModeledEpoch=previous.epoch;lastResultPath=previous.result_file;}
   const lastClosed=db.prepare('SELECT * FROM paper_consumed_epochs ORDER BY epoch DESC LIMIT 1').get() as any;
   lastClosedEpoch=lastClosed?.epoch??a.carryFrom.lastEpoch;lastReceipt=lastClosed?.result_file??a.carryFrom.result.path;lastDisposition=lastClosed?.disposition??'CARRIED_CLOSED_ACCOUNT';
+  payoutApplication=a.payoutRegistry?checkedPayoutApplication(db,a.payoutRegistry):null;
+  if(existsSync(payoutReportFile))need(payoutApplication&&stableJSON(ownedJSON(payoutReportFile))===stableJSON(payoutApplication),'payout_application_conflict');
+  else if(payoutApplication)immutable(payoutReportFile,payoutApplication);
   } catch(error) {
     const failure:any=error instanceof Error?error:new Error(String(error));
     let account:ReturnType<typeof exactAccount>|null=null,accountReadError:string|null=null,cursors:any[]|null=null,cursorReadError:string|null=null;
@@ -474,26 +546,58 @@ export async function runPaperFollower(admissionFile:string,dev?:{maxCycles?:num
   const stop=()=>{stopping=true};process.on('SIGINT',stop);process.on('SIGTERM',stop);
   const logger:any=Object.fromEntries(['info','warn','error','debug','trace','fatal'].map(level=>[level,(...args:any[])=>{if(level==='error'||level==='warn')console.log(JSON.stringify({level,args}))}]));
   const state=(status:string,extra:any={})=>{const account=exactAccount(db);
-    const valuationMatches=lastResult?.terminal?.snapshot?.cashUSDC===account.cashUSDC&&stableJSON(lastResult?.terminal?.snapshot?.shares)===stableJSON(account.heldShares)&&lastResult?.terminal?.snapshot?.reservedBuyUSDC===account.reservedBuyUSDC;
-    const complete=valuationMatches&&lastResult?.terminal?.accounting?.complete===true;
+    const matches=(r:any)=>r?.terminal?.snapshot?.cashUSDC===account.cashUSDC&&stableJSON(r?.terminal?.snapshot?.shares)===stableJSON(account.heldShares)&&r?.terminal?.snapshot?.reservedBuyUSDC===account.reservedBuyUSDC&&stableJSON(r?.terminal?.snapshot?.reservedSellShares)===stableJSON(account.reservedSellShares);
+    const valuation=matches(lastResult)?lastResult:matches(payoutApplication)?payoutApplication:null;
+    const complete=valuation?.terminal?.accounting?.complete===true;
     lastState={schema:'CONSERVING_PAPER_FOLLOWER_STATE_V2',mode:FILL_PROTOCOL.mode,status,pid:process.pid,activeEpoch,
-      heartbeatUTC:new Date().toISOString(),sourceRoot:a.sourceRoot,sourceCaptureDuplicated:false,...account,lastModeledEpoch,lastResultPath,lastClosedEpoch,lastReceipt,lastDisposition,
-      sourceAsOfUTC:lastResult?.terminal?.accounting?.valuationTs??null,complete,modelNetPnlUSDC:complete?lastResult.terminal.accounting.netPnl:null,
+      heartbeatUTC:new Date().toISOString(),sourceRoot:a.sourceRoot,sourceCutover:a.sourceCutover??null,sourceCaptureDuplicated:false,...account,lastModeledEpoch,lastResultPath,lastClosedEpoch,lastReceipt,lastDisposition,
+      sourceAsOfUTC:valuation?.terminal?.accounting?.valuationTs??lastResult?.terminal?.accounting?.valuationTs??null,complete,modelNetPnlUSDC:complete?valuation.terminal.accounting.netPnl:null,
+      observedPayoutApplication:payoutApplication?{path:payoutReportFile,registry:payoutApplication.registry,at:payoutApplication.at,costScenario:'paper-zero-redemption-cost-v1',actualGas:null,actualRedemption:null}:null,
       modeledFills:(db.prepare('SELECT COUNT(*) n FROM shadow_fills').get() as any).n,consumedEpochs:(db.prepare('SELECT COUNT(*) n FROM paper_consumed_epochs').get() as any).n,completedEpochs:(db.prepare("SELECT COUNT(*) n FROM paper_consumed_epochs WHERE disposition='MODELLED'").get() as any).n,skippedEpochs:(db.prepare("SELECT COUNT(*) n FROM paper_consumed_epochs WHERE disposition='SKIP_MODEL_SOURCE_INELIGIBLE'").get() as any).n,
       actualRevenue:null,realizedVenueProfit:null,actualAccountChargesUSD:null,economicAdvantage:'NOT_ESTABLISHED',...extra};atomic(path.join(a.outputDirectory,'state.json'),lastState)};
   try{
     state('WAITING_CLOSED_SOURCE');while(!stopping&&(!dev?.maxCycles||cycles++<dev.maxCycles)){
-      verifyCode();verifyFollowerKernelLock(a.outputDirectory);const disk=statfsSync(a.outputDirectory,{bigint:true});need(disk.bavail*disk.bsize>=8589934592n,'disk_reserve');
-      const epochs=readdirSync(a.sourceRoot).filter(n=>/^epoch-\d{6}$/.test(n)).map(n=>Number(n.slice(6))).filter(n=>n>=a.firstEpoch).sort((x,y)=>x-y);
+      verifyCode();regularPin(a.sourceAdmission);if(a.sourceCutover)regularPin(a.sourceCutover.sourceAdmission);if(a.payoutRegistry)readPayoutRegistry(a.payoutRegistry);verifyFollowerKernelLock(a.outputDirectory);const disk=statfsSync(a.outputDirectory,{bigint:true});need(disk.bavail*disk.bsize>=8589934592n,'disk_reserve');
+      const roots=a.sourceCutover?[{root:a.sourceRoot,min:a.firstEpoch,max:a.sourceCutover.afterEpoch},{root:a.sourceCutover.sourceRoot,min:a.sourceCutover.afterEpoch+1,max:Infinity}]:[{root:a.sourceRoot,min:a.firstEpoch,max:Infinity}];
+      const epochs=roots.flatMap(r=>readdirSync(r.root).filter(n=>/^epoch-\d{6}$/.test(n)).map(n=>Number(n.slice(6))).filter(n=>n>=r.min&&n<=r.max)).sort((x,y)=>x-y);
+      const sourceRootFor=(n:number)=>a.sourceCutover&&n>a.sourceCutover.afterEpoch?a.sourceCutover.sourceRoot:a.sourceRoot;
       let advanced=false,expected=a.firstEpoch;
-      for(const n of epochs){if(stopping)break;const epoch=path.join(a.sourceRoot,'epoch-'+String(n).padStart(6,'0')),summaryFile=path.join(epoch,'epoch-summary.json');if(n>expected||!existsSync(summaryFile))break;
+      for(const n of epochs){if(stopping)break;const epoch=path.join(sourceRootFor(n),'epoch-'+String(n).padStart(6,'0')),summaryFile=path.join(epoch,'epoch-summary.json');if(n>expected||!existsSync(summaryFile))break;
        const consumed=db.prepare('SELECT * FROM paper_consumed_epochs WHERE epoch=?').get(n) as any;
        if(consumed){need(hash(readFileSync(summaryFile))===consumed.source_sha&&hash(readFileSync(consumed.result_file))===consumed.result_sha,'consumed_epoch_changed');expected=n+1;continue;}
-       activeEpoch=n;state('CHECKING_CLOSED_SOURCE');const eligibility=await structuralDisposition(epoch,config.topN);if(stopping)break;const sourceSha=eligibility.summarySha256;
+       activeEpoch=n;if(a.carryFrom.checkpoint&&n===a.carryFrom.checkpoint.resumeEpoch){regularPin(a.carryFrom.checkpoint.resumeSource.summary);regularPin(a.carryFrom.checkpoint.resumeSource.ledger);}
+       state('CHECKING_CLOSED_SOURCE');const eligibility=await structuralDisposition(epoch,config.topN);if(stopping)break;const sourceSha=eligibility.summarySha256;
+       if(a.sourceCutover&&n===a.sourceCutover.afterEpoch+1){
+        const priorEpoch=path.join(a.sourceRoot,'epoch-'+String(a.sourceCutover.afterEpoch).padStart(6,'0'));
+        const prior=db.prepare('SELECT * FROM paper_consumed_epochs WHERE epoch=?').get(a.sourceCutover.afterEpoch) as any;need(prior&&hash(readFileSync(path.join(priorEpoch,'epoch-summary.json')))===prior.source_sha,'follower_cutover_prior');
+        const old=await structuralDisposition(priorEpoch,config.topN),oldLedger=ownedJSON(path.join(priorEpoch,'source/ledger.json')),nextLedger=ownedJSON(path.join(epoch,'source/ledger.json'));
+        regularPin(a.sourceAdmission);regularPin(a.sourceCutover.sourceAdmission);
+        const core=new PaperMakerExecution(db,FILL_POLICY,()=>nextLedger.startedAt);
+        core.beginSourceClockOrigin({fromAdmissionSha256:a.sourceAdmission.sha256,toAdmissionSha256:a.sourceCutover.sourceAdmission.sha256,afterEpoch:a.sourceCutover.afterEpoch,firstEpoch:n,oldFinalReceipt:oldLedger.termination.at,newFirstReceipt:nextLedger.startedAt,oldSummarySha256:old.summarySha256,newLedgerSha256:eligibility.ledgerSha256});
+        if(a.payoutRegistry){const registry=readPayoutRegistry(a.payoutRegistry);need(registry.observedReceiptUTC<=nextLedger.startedAt.utc,'payout_registry_not_yet_observed');
+          db.exec(`CREATE TABLE IF NOT EXISTS paper_replay_payout_application(registry_sha TEXT PRIMARY KEY,payload_sha TEXT NOT NULL,payload_json TEXT NOT NULL);
+            CREATE TRIGGER IF NOT EXISTS paper_replay_payout_application_update BEFORE UPDATE ON paper_replay_payout_application BEGIN SELECT RAISE(ABORT,'fill_paper:immutable_payout_application'); END;
+            CREATE TRIGGER IF NOT EXISTS paper_replay_payout_application_delete BEFORE DELETE ON paper_replay_payout_application BEGIN SELECT RAISE(ABORT,'fill_paper:immutable_payout_application'); END;`);
+          let retained=db.prepare('SELECT * FROM paper_replay_payout_application WHERE registry_sha=?').get(a.payoutRegistry.sha256) as any;
+          if(!retained){
+            need(!existsSync(payoutReportFile)&&!db.prepare('SELECT 1 FROM paper_replay_cursor WHERE epoch=?').get(epoch),'payout_application_missing_custody');
+            db.transaction(()=>{for(const entry of registry.entries){const prior=db.prepare('SELECT 1 FROM paper_execution_settlements WHERE token=?').get(entry.token),position=db.prepare('SELECT shares FROM paper_execution_positions WHERE token=?').get(entry.token) as any;
+              if(prior||position&&BigInt(position.shares)>0n)core.settleBinaryHolding({...entry,at:nextLedger.startedAt,observedReceiptUTC:registry.observedReceiptUTC,registrySha256:a.payoutRegistry!.sha256,sourceResultSha256:registry.sourceResult.sha256,sourceReviewSha256:registry.sourceReview.sha256,costScenario:registry.costScenario});
+            }
+              const applied={schema:'PAPER_OBSERVED_PAYOUT_APPLICATION_V2',registry:a.payoutRegistry,at:nextLedger.startedAt,terminal:core.terminalReport({valuationTs:nextLedger.startedAt.utc,asOfReceiptTs:nextLedger.startedAt.utc}),canonicalPrefix:db.prepare('SELECT * FROM accounting_events ORDER BY id').all(),costScenario:'paper-zero-redemption-cost-v1',actualGas:null,actualRedemption:null,actualRevenue:null};
+              const payload=JSON.stringify(applied);db.prepare('INSERT INTO paper_replay_payout_application VALUES(?,?,?)').run(a.payoutRegistry!.sha256,hash(payload),payload);
+            })();
+            retained=db.prepare('SELECT * FROM paper_replay_payout_application WHERE registry_sha=?').get(a.payoutRegistry.sha256) as any;
+          }
+          const applied=checkedPayoutApplication(db,a.payoutRegistry,nextLedger.startedAt);need(applied,'payout_application_custody');
+          if(existsSync(payoutReportFile))need(stableJSON(ownedJSON(payoutReportFile))===stableJSON(applied),'payout_application_conflict');else immutable(payoutReportFile,applied);payoutApplication=applied;
+        }
+       }
        const report=path.join(a.outputDirectory,'epoch-'+String(n).padStart(6,'0')+'.json');let result:any,disposition:string;
        if(eligibility.reason){disposition='SKIP_MODEL_SOURCE_INELIGIBLE';result={schema:'PAPER_FOLLOWER_SOURCE_INELIGIBLE_V1',disposition,epoch,reason:eligibility.reason,detail:eligibility.detail,source:eligibility,
          accountUnchanged:exactAccount(db),modelNetPnlUSDC:null,reward:null,actualRevenue:null,sourceCaptureDuplicated:false};}
-       else{disposition='MODELLED';state('REPLAYING_CLOSED_SOURCE');dev?.beforeReplay?.(n);result=await replayPaperEpoch(epoch,db,config,logger);}
+       else{disposition='MODELLED';state('REPLAYING_CLOSED_SOURCE');dev?.beforeReplay?.(n);result=await replayPaperEpoch(epoch,db,config,logger,{afterCommit:state=>dev?.afterReplayCommit?.(n,state)});}
+       result.sourceClockOrigins=db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_execution_clock_origins'").get()?db.prepare('SELECT payload FROM paper_execution_clock_origins ORDER BY sequence').all().map((r:any)=>JSON.parse(r.payload)):[];
        verifyCode();need(hash(readFileSync(summaryFile))===sourceSha,'closed_source_mutated');
        if(existsSync(report)){const original=ownedJSON(report);need(stableJSON(economicProjection(original))===stableJSON(economicProjection(result)),'existing_epoch_projection_conflict');}
        else immutable(report,result);

@@ -255,3 +255,15 @@ and malformed identity, fee, minimum and level evidence still fail closed.
 An old failed owner is preserved; reviewed successor custody carries its bank
 and counters. Source quote throughput remains separate from conserving paper
 fills, settlement and economic research.
+
+
+### Observed payouts and exact paper continuation
+
+The conserving follower can resume an independently reviewed incomplete epoch
+from its committed cursor/PRNG without refunding reservations or repeating the
+opening event. Original stale public prints are retained as typed refusals with
+the cursor; the core clock validator remains strict. A distinct reviewed source
+clock origin requires zero obligations and preserves both original clocks.
+A pinned independently observed binary payout registry may settle owned tokens
+only at an eligible source boundary after receipt. Cash postings stay SIMULATED,
+with explicit zero model redemption cost and unknown actual gas/revenue.

@@ -6,6 +6,8 @@ export type PaperClock = { utc:number; mono:number };
 export type PaperLevel = { price:string; size:string };
 export type PaperBook = { sourceId:string; token:string; market:string; bids:PaperLevel[]; asks:PaperLevel[];
   tick:string; lot:string; minimumShares:string; minimumNotionalUSDC?:string; at:PaperClock; venueUtc:number };
+export type PaperSourceClockOrigin = {fromAdmissionSha256:string;toAdmissionSha256:string;afterEpoch:number;firstEpoch:number;oldFinalReceipt:PaperClock;newFirstReceipt:PaperClock;oldSummarySha256:string;newLedgerSha256:string};
+export type PaperBinarySettlement = {token:string;market:string;condition:string;payout:0|1;at:PaperClock;observedReceiptUTC:number;registrySha256:string;sourceResultSha256:string;sourceReviewSha256:string;costScenario:'paper-zero-redemption-cost-v1'};
 export type PaperTrade = { sourceId:string; token:string; side:'BUY'|'SELL'; price:string; size:string; at:PaperClock; venueUtc:number };
 export type PaperMakerPolicy = { accountKey:string; walletId:number; openingCash:string; perOrder:string;
   maxExposure:string; maxInventoryShares:string; submitLatencyMs:number; cancelLatencyMs:0;
@@ -27,6 +29,12 @@ export class PaperMakerExecution {
   need(policy.submitLatencyMs===100&&policy.cancelLatencyMs===0&&policy.feeModel==='paper-maker-zero-fee-v1','model_policy');
   const at=this.clock();this.validClock(at);
   db.exec(`CREATE TABLE IF NOT EXISTS paper_execution_account(id INTEGER PRIMARY KEY CHECK(id=1),policy TEXT NOT NULL,cash TEXT NOT NULL,last_utc INTEGER NOT NULL,last_mono REAL NOT NULL);
+   CREATE TABLE IF NOT EXISTS paper_execution_settlements(token TEXT PRIMARY KEY,payload TEXT NOT NULL,quantity TEXT NOT NULL,cash_credit TEXT NOT NULL,at_utc INTEGER NOT NULL);
+   CREATE TRIGGER IF NOT EXISTS paper_execution_settlement_update BEFORE UPDATE ON paper_execution_settlements BEGIN SELECT RAISE(ABORT,'paper_execution:immutable_settlement'); END;
+   CREATE TRIGGER IF NOT EXISTS paper_execution_settlement_delete BEFORE DELETE ON paper_execution_settlements BEGIN SELECT RAISE(ABORT,'paper_execution:immutable_settlement'); END;
+   CREATE TABLE IF NOT EXISTS paper_execution_clock_origins(sequence INTEGER PRIMARY KEY,admission_sha TEXT UNIQUE NOT NULL,payload TEXT NOT NULL);
+   CREATE TRIGGER IF NOT EXISTS paper_execution_clock_origin_update BEFORE UPDATE ON paper_execution_clock_origins BEGIN SELECT RAISE(ABORT,'paper_execution:immutable_clock_origin'); END;
+   CREATE TRIGGER IF NOT EXISTS paper_execution_clock_origin_delete BEFORE DELETE ON paper_execution_clock_origins BEGIN SELECT RAISE(ABORT,'paper_execution:immutable_clock_origin'); END;
    CREATE TABLE IF NOT EXISTS paper_execution_positions(token TEXT PRIMARY KEY,shares TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS paper_execution_queues(cohort TEXT PRIMARY KEY,token TEXT,side TEXT,price TEXT,ahead TEXT NOT NULL,source_id TEXT NOT NULL,activate_utc INTEGER NOT NULL,activate_mono REAL NOT NULL,checked INTEGER NOT NULL,rejected INTEGER NOT NULL);
    CREATE TABLE IF NOT EXISTS paper_execution_orders(order_id INTEGER PRIMARY KEY,token TEXT NOT NULL,side TEXT NOT NULL,price TEXT NOT NULL,remaining TEXT NOT NULL,activate_utc INTEGER NOT NULL,activate_mono REAL NOT NULL,status TEXT NOT NULL,cohort TEXT NOT NULL);
@@ -69,10 +77,43 @@ export class PaperMakerExecution {
   const fills=this.db.prepare('SELECT f.*,o.side,o.token_id FROM shadow_fills f JOIN shadow_orders o ON o.id=f.order_id ORDER BY f.id').all() as Row[];
   let cash=units(this.policy.openingCash)*S;const positions:Record<string,bigint>={};
   for(const f of fills){need(f.method==='paper_fifo_model','foreign_fill');const q=units(f.size),p=units(f.price);cash+=(f.side==='BUY'?-1n:1n)*q*p;positions[f.token_id]=(positions[f.token_id]??0n)+(f.side==='BUY'?q:-q);}
+  const settlements=this.db.prepare('SELECT * FROM paper_execution_settlements ORDER BY rowid').all() as Row[];
+  for(const r of settlements){const v=JSON.parse(r.payload) as PaperBinarySettlement,q=BigInt(r.quantity),credit=q*S*BigInt(v.payout);need(q>0n&&q%1000n===0n&&positions[r.token]===q&&credit===BigInt(r.cash_credit),'settlement_ledger_mismatch');positions[r.token]=0n;cash+=credit;}
   need(cash===BigInt(this.account()!.cash),'cash_ledger_mismatch');
   const actual=this.db.prepare('SELECT * FROM paper_execution_positions').all() as Row[];need(actual.every(r=>BigInt(r.shares)===(positions[r.token]??0n))&&Object.keys(positions).every(t=>actual.some(r=>r.token===t)),'position_ledger_mismatch');
   const report=getAccountingReport(this.db,this.policy.accountKey,Number.MAX_SAFE_INTEGER);
-  need(report.events.length===fills.length+1&&report.events.every(e=>e.accountKey===this.policy.accountKey&&e.finality==='SIMULATED'&&(e.eventKey==='paper-opening:'+this.policy.accountKey||fills.some(f=>e.eventKey==='shadow-fill:'+f.id)))&&Math.abs(report.cash-Number(text(cash,C)))<1e-8,'canonical_ledger_mismatch');
+  need(report.events.length===fills.length+settlements.length+1&&report.events.every(e=>e.accountKey===this.policy.accountKey&&e.finality==='SIMULATED'&&(e.eventKey==='paper-opening:'+this.policy.accountKey||fills.some(f=>e.eventKey==='shadow-fill:'+f.id)||settlements.some(r=>e.eventKey==='paper-settlement:'+r.token)))&&Math.abs(report.cash-Number(text(cash,C)))<1e-8,'canonical_ledger_mismatch');
+ }
+ /** Model collateral credit from separately reviewed observed binary payout, never a chain redemption. */
+ settleBinaryHolding(input:PaperBinarySettlement){const v=structuredClone(input);this.validClock(v.at);
+  need(typeof v.token==='string'&&/^\d+$/.test(v.token)&&typeof v.market==='string'&&v.market.length>0&&/^0x[a-fA-F0-9]{64}$/.test(v.condition)&&(v.payout===0||v.payout===1),'settlement_identity');
+  need(v.costScenario==='paper-zero-redemption-cost-v1'&&[v.registrySha256,v.sourceResultSha256,v.sourceReviewSha256].every(s=>typeof s==='string'&&/^[a-f0-9]{64}$/.test(s)),'settlement_provenance');
+  need(Number.isSafeInteger(v.observedReceiptUTC)&&v.observedReceiptUTC>=0&&v.observedReceiptUTC<=v.at.utc,'settlement_receipt');
+  const payload=JSON.stringify(v),old=this.db.prepare('SELECT payload FROM paper_execution_settlements WHERE token=?').get(v.token) as Row|undefined;
+  if(old){need(old.payload===payload,'settlement_conflict');return {duplicate:true};}
+  this.db.transaction(()=>{const a=this.account()!,now=this.clock();need(v.at.utc===now.utc&&v.at.mono===now.mono&&v.at.utc>=a.last_utc&&v.at.mono>=a.last_mono,'settlement_clock');
+   need(this.active().length===0&&(this.db.prepare("SELECT COUNT(*) n FROM shadow_orders WHERE status IN ('OPEN','PARTIAL','PENDING')").get() as Row).n===0,'settlement_open_orders');
+   const terms=this.db.prepare('SELECT market FROM paper_execution_terms WHERE token=?').get(v.token) as Row|undefined;need(terms?.market===v.market,'settlement_market');
+   const q=this.position(v.token);need(q>0n&&q%1000n===0n,'settlement_quantity_precision');const credit=q*S*BigInt(v.payout),numberQ=Number(text(q));need(units(numberQ)===q,'settlement_quantity_precision');
+   this.db.prepare('INSERT INTO paper_execution_settlements VALUES(?,?,?,?,?)').run(v.token,payload,q.toString(),credit.toString(),v.at.utc);
+   this.db.prepare("UPDATE paper_execution_positions SET shares='0' WHERE token=?").run(v.token);
+   this.db.prepare('UPDATE paper_execution_account SET cash=?,last_utc=?,last_mono=? WHERE id=1').run((BigInt(a.cash)+credit).toString(),v.at.utc,v.at.mono);
+   postAccountingEvent(this.db,{eventKey:'paper-settlement:'+v.token,accountKey:this.policy.accountKey,kind:'SETTLEMENT',source:'paper-observed-payout-model',sourceRef:v.registrySha256,tokenId:v.token,eventTs:v.at.utc,receiptTs:v.at.utc,processingOrder:(this.db.prepare('SELECT COUNT(*) n FROM accounting_events').get() as Row).n,finality:'SIMULATED',netSharesDelta:-numberQ,price:v.payout,cashDelta:Number(text(credit,C)),feeEvidence:'MODELED',feeAsset:'USDC',feeAmount:0,ruleVersion:v.costScenario,roundingPolicy:'exact-scale18-cash-scale9-shares-microcollateral-representable',collateralAsset:'USDC'});
+  })();this.books.delete(v.token);return {duplicate:false};
+ }
+ /** Explicit source-process boundary; raw monotonic clocks are never offset or rewritten. */
+ beginSourceClockOrigin(input:PaperSourceClockOrigin){const v=structuredClone(input);this.validClock(v.oldFinalReceipt);this.validClock(v.newFirstReceipt);
+  need([v.fromAdmissionSha256,v.toAdmissionSha256,v.oldSummarySha256,v.newLedgerSha256].every(s=>typeof s==='string'&&/^[a-f0-9]{64}$/.test(s))&&v.fromAdmissionSha256!==v.toAdmissionSha256,'source_origin_identity');
+  need(Number.isSafeInteger(v.afterEpoch)&&v.afterEpoch>=1&&v.firstEpoch===v.afterEpoch+1,'source_origin_epoch');
+  const payload=JSON.stringify(v),existing=this.db.prepare('SELECT payload FROM paper_execution_clock_origins WHERE admission_sha=?').get(v.toAdmissionSha256) as Row|undefined;
+  if(existing){need(existing.payload===payload,'source_origin_conflict');return {duplicate:true};}
+  this.db.transaction(()=>{const a=this.account()!,last=this.db.prepare('SELECT payload FROM paper_execution_clock_origins ORDER BY sequence DESC LIMIT 1').get() as Row|undefined;
+   need(!last||JSON.parse(last.payload).toAdmissionSha256===v.fromAdmissionSha256,'source_origin_chain');
+   need(this.active().length===0&&(this.db.prepare("SELECT COUNT(*) n FROM shadow_orders WHERE status IN ('OPEN','PARTIAL','PENDING')").get() as Row).n===0,'source_origin_open_orders');
+   need(v.oldFinalReceipt.utc>=a.last_utc&&v.oldFinalReceipt.mono>=a.last_mono&&v.newFirstReceipt.utc>=v.oldFinalReceipt.utc,'source_origin_chronology');
+   this.db.prepare('INSERT INTO paper_execution_clock_origins(admission_sha,payload) VALUES(?,?)').run(v.toAdmissionSha256,payload);
+   this.db.prepare('UPDATE paper_execution_account SET last_utc=?,last_mono=? WHERE id=1').run(v.newFirstReceipt.utc,v.newFirstReceipt.mono);
+  })();this.books.clear();return {duplicate:false};
  }
  private activationSafe(book:PaperBook,queue:Row){return book.at.utc<=queue.activate_utc&&queue.activate_utc-book.at.utc<=1000&&book.at.mono<=queue.activate_mono&&queue.activate_mono-book.at.mono<=1000&&queue.activate_utc-book.venueUtc<=1000;}
  private rejectCohort(cohort:string,at:PaperClock){const before=this.internal;this.internal=true;try{
@@ -85,6 +126,7 @@ export class PaperMakerExecution {
  private active():Row[]{return this.db.prepare("SELECT q.*,o.size,o.filled_size,o.ts,o.expected_cancel_ts FROM paper_execution_orders q JOIN shadow_orders o ON o.id=q.order_id WHERE q.status='ACTIVE' ORDER BY o.ts,o.id").all() as Row[];}
  private book(token:string,at:PaperClock):PaperBook {const b=this.books.get(token);need(b,'book_unavailable');need(at.utc>=b.at.utc&&at.utc-b.at.utc<=1000&&at.mono>=b.at.mono&&at.mono-b.at.mono<=1000&&at.utc-b.venueUtc<=1000,'stale_book');return b;}
  observeBook(input:PaperBook){const b=structuredClone(input);this.validClock(b.at);const now=this.clock();need(b.at.utc<=now.utc&&b.at.mono<=now.mono,'book_receipt_clock');need(b.sourceId&&b.token&&b.market&&Number.isSafeInteger(b.venueUtc)&&b.venueUtc<=b.at.utc&&b.at.utc-b.venueUtc<=1000,'book_identity_clock');
+  need(!this.db.prepare('SELECT 1 FROM paper_execution_settlements WHERE token=?').get(b.token),'settled_token');
   const old=this.books.get(b.token);if(old){need(b.market===old.market,'book_market_change');need(b.at.utc>=old.at.utc&&b.at.mono>=old.at.mono&&b.venueUtc>=old.venueUtc,'backdated_book');
    if(this.active().some(r=>r.token===b.token))need(units(b.tick)===units(old.tick)&&units(b.lot)===units(old.lot)&&units(b.minimumShares)===units(old.minimumShares)&&units(b.minimumNotionalUSDC??'0')===units(old.minimumNotionalUSDC??'0'),'active_terms_change');}
   const tick=units(b.tick);need(tick>0n&&units(b.lot)>0n&&units(b.minimumShares)>0n,'book_terms');units(b.minimumNotionalUSDC??'0');
@@ -185,6 +227,7 @@ export class PaperMakerExecution {
   const available=min(min(cash-reserved,exposureRemaining),units(this.policy.maxExposure)*S-reserved);
   return {cashUSDC:text(cash,C),shares:Object.fromEntries((this.db.prepare('SELECT * FROM paper_execution_positions ORDER BY token').all() as Row[]).map(r=>[r.token,text(BigInt(r.shares))])),
    reservedBuyUSDC:text(reserved,C),reservedSellShares:Object.fromEntries(Object.entries(sell).map(([k,v])=>[k,text(v)])),availableBuyUSDC:text(available>0n?available:0n,C),
+   settlements:this.db.prepare('SELECT * FROM paper_execution_settlements ORDER BY rowid').all(),
    orders:this.db.prepare('SELECT * FROM shadow_orders ORDER BY id').all(),queues:this.db.prepare('SELECT * FROM paper_execution_queues ORDER BY token,side,price').all(),
    trades:this.db.prepare('SELECT * FROM paper_execution_trades ORDER BY rowid').all(),allocations:this.db.prepare('SELECT * FROM paper_execution_allocations ORDER BY rowid').all(),
    finality:'SIMULATED',actualPaidFees:null,actualRevenue:null,forcedFills:false,syntheticRebalance:false};
@@ -195,7 +238,7 @@ export class PaperMakerExecution {
    if(units(q)===0n)return false;const p=canonical.positions.find(p=>p.tokenId===token);
    try{return !p||units(p.shares)!==units(q)||p.mark==null||p.markTs==null||p.markTs>Math.min(options.valuationTs,options.asOfReceiptTs??options.valuationTs)||options.valuationTs-p.markTs>60000;}catch{return true;}
   }).map(([token])=>token);
-  const lastFill=(this.db.prepare('SELECT MAX(ts) ts FROM shadow_fills').get() as Row).ts as number|null;
+  const lastFill=(this.db.prepare('SELECT MAX(ts) ts FROM (SELECT ts FROM shadow_fills UNION ALL SELECT at_utc AS ts FROM paper_execution_settlements)').get() as Row).ts as number|null;
   const retrospectiveUnsupported=lastFill!=null&&Math.min(options.valuationTs,options.asOfReceiptTs??options.valuationTs)<lastFill;
   const accounting=missing.length||retrospectiveUnsupported?{...canonical,reportId:digest({canonicalReportId:canonical.reportId,exactMissing:missing,retrospectiveUnsupported,snapshot}),canonicalReportId:canonical.reportId,accountingVersion:canonical.accountingVersion+'+exact-paper-holdings-v1',complete:false,netPnl:null,issues:[...canonical.issues,...missing.map(tokenId=>({code:'EXACT_NONZERO_HOLDING_UNMARKED',tokenId})),...(retrospectiveUnsupported?[{code:'RETROSPECTIVE_EXACT_HOLDINGS_UNSUPPORTED'}]:[])],assurance:{...canonical.assurance,dataComplete:false,postingValidated:false}}:canonical;
   return {snapshot,accounting,canonicalAccounting:canonical,exactUnmarkedTokens:missing,retrospectiveUnsupported,realizedVenueProfit:null,queueModel:'risk-adverse-same-price-cohort-fifo-v1'};

@@ -225,3 +225,17 @@ reads. `tests/maker/maker_operating_source_bridge.test.ts` checks malformed
 near-neighbors and strict default startup; `maker_operating.test.ts` checks
 exact clean error recognition and bounded slot handling. Do not generalize
 other mismatches or cleanup failures into availability.
+
+
+## Exact follower restart and binary payout evidence
+
+`maker_fill_paper.ts` freezes the conserving follower admission and validates
+code/source/operation/carry pins plus single-owner kernel locks. An interrupted
+epoch uses its exact retained cursor, reservations and random state. Typed
+old-print refusal is atomic with cursor advancement. Source-clock changes and
+`PaperMakerExecution.settleBinaryHolding` require zero active obligations.
+Settlement stores immutable provenance and canonical SIMULATED accounting;
+its retained boundary snapshot survives a crash before first new-epoch
+consumption and later trades. Tests: maker_fill_print_applicability,
+maker_fill_follower, paper_fill_settlement and paper_fill_source_origin.
+These are engineering/counterfactual results, not actual execution or alpha.

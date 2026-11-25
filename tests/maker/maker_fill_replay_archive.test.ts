@@ -23,7 +23,7 @@ class Socket extends EventEmitter {
 }
 const logger:any=Object.fromEntries(['info','warn','error','debug','trace','fatal'].map(k=>[k,()=>{}]));
 async function flush(){for(let n=0;n<40;n++)await Promise.resolve()}
-async function archive(options:{mixedTradeBeforeBookAt?:number; invalidDeltaAt?:number; staleFullAt?:number; validStaleThenDelta?:boolean}={}){
+async function archive(options:{mixedTradeBeforeBookAt?:number; invalidDeltaAt?:number; staleFullAt?:number; validStaleThenDelta?:boolean; stalePrintAt?:number}={}){
  vi.useFakeTimers({toFake:['Date','setTimeout','clearTimeout']});vi.setSystemTime(START);
  mkdirSync(path.resolve('reports/evidence'),{recursive:true});const root=mkdtempSync(path.resolve('reports/evidence/authored-fill-archive-'));dirs.push(root);const epoch=path.join(root,'epoch-000001');mkdirSync(epoch);
  const at=()=>({utc:Date.now(),mono:Date.now()-START});const token='111';
@@ -54,7 +54,7 @@ async function archive(options:{mixedTradeBeforeBookAt?:number; invalidDeltaAt?:
   if(options.invalidDeltaAt===second){socket.message({event_type:'price_change',market:CONDITION,timestamp:String(Date.now()),price_changes:[{asset_id:token,side:'SELL',price:'0.49',size:'100',best_bid:'0.49',best_ask:'0.51',hash:'authored-conflicting-bbo'}]});await flush()}
   if(options.staleFullAt===second){socket.message({...book(second),event_type:'book',timestamp:String(Date.now()-1),bids:[{price:'0.47',size:'900'}]});await flush()}
   if(second===2){socket.emit('ping',Buffer.from('authored-ping'));socket.emit('pong',Buffer.from('authored-pong'));socket.message('PONG')}
-  if(second===13||second>=15){const print={event_type:'last_trade_price',market:CONDITION,asset_id:token,timestamp:String(Date.now()),price:'0.50',size:second===13?'5':'100',side:second===13?'BUY':'SELL',fee_rate_bps:'2500',transaction_hash:'0x'+second.toString(16).padStart(64,'0')};socket.message(options.mixedTradeBeforeBookAt===second?[print,{...book(second),event_type:'book'}]:print);await flush()}
+  if(second===13||second>=15){const print={event_type:'last_trade_price',market:CONDITION,asset_id:token,timestamp:String(Date.now()-(options.stalePrintAt===second?1227:0)),price:'0.50',size:second===13?'5':'100',side:second===13?'BUY':'SELL',fee_rate_bps:'2500',transaction_hash:'0x'+second.toString(16).padStart(64,'0')};socket.message(options.mixedTradeBeforeBookAt===second?[print,{...book(second),event_type:'book'}]:print);await flush()}
   proofHeads.push(capture.proofHeadSha256());await vi.advanceTimersByTimeAsync(200);await flush();
  }
  capture.stop('authored_complete');await pending;await capture.settleCallbacks();const ledger=capture.ledger();
@@ -64,7 +64,7 @@ async function archive(options:{mixedTradeBeforeBookAt?:number; invalidDeltaAt?:
  const config=JSON.parse(readFileSync('configs/worker.json','utf8'));return {root,epoch,ledger,frames,samples,proofHeads,config};
 }
 function database(root:string,name:string){const db=createPaperDatabase(path.join(root,name+'.sqlite'));dbs.push(db);return db}
-function state(db:ReturnType<typeof createPaperDatabase>){return Object.fromEntries(['shadow_orders','shadow_fills','accounting_events','paper_execution_account','paper_execution_positions','paper_execution_queues','paper_execution_orders','paper_execution_trades','paper_execution_allocations','paper_replay_cursor'].map(t=>[t,db.prepare('SELECT * FROM '+t+' ORDER BY rowid').all()]))}
+function state(db:ReturnType<typeof createPaperDatabase>){return Object.fromEntries(['shadow_orders','shadow_fills','accounting_events','paper_execution_account','paper_execution_positions','paper_execution_queues','paper_execution_orders','paper_execution_trades','paper_execution_allocations','paper_replay_cursor','paper_replay_print_refusals'].map(t=>[t,db.prepare('SELECT * FROM '+t+' ORDER BY rowid').all()]))}
 
 describe('actual archive-to-MakerLoop paper replay, all transports authored offline',()=>{
  it('verifies transport controls separately, then actually quotes, fills and reconciles the model account',async()=>{
@@ -127,6 +127,22 @@ describe('actual archive-to-MakerLoop paper replay, all transports authored offl
   expect(fresh.length).toBeGreaterThan(0);expect(fresh.every(b=>b.bids.some(l=>l.price==='0.48'&&l.size==='700'))).toBe(true);
   expect(fresh.every(b=>b.asks.some(l=>l.price==='0.51'&&l.size==='120'))).toBe(true);
   expect(out.terminal.snapshot.orders.some((o:any)=>o.ts===START+17000)).toBe(true);
+ });
+
+ it('retains a stale public print as a refusal without applying it, then processes later eligible prints',async()=>{
+  const f=await archive({stalePrintAt:16}),db=database(f.root,'stale-print');const out=await replayPaperEpoch(f.epoch,db,f.config,logger);
+  expect(out.sourceBoundary).toBeNull();expect(out.printRefusals).toHaveLength(1);const refusal=JSON.parse((out.printRefusals[0] as any).payload_json);
+  expect(refusal).toMatchObject({modelRefusal:true,reason:'STALE_PUBLIC_PRINT',ageMs:1227,venueUtc:START+14573,at:{utc:START+15800}});expect(refusal.sourceFrameSha256).toMatch(/^[a-f0-9]{64}$/);
+  expect(out.fills.some((x:any)=>x.ts===START+15800)).toBe(false);expect(out.fills.some((x:any)=>x.ts>=START+16800)).toBe(true);
+ });
+ it('commits the refusal with the source cursor and atomically retries after refusal-storage failure',async()=>{
+  const f=await archive({stalePrintAt:16}),control=database(f.root,'stale-control'),broken=database(f.root,'stale-broken');await replayPaperEpoch(f.epoch,control,f.config,logger);
+  // Session installs its dedicated schema; no economic effect is performed here.
+  broken.exec('CREATE TABLE paper_replay_print_refusals(epoch TEXT NOT NULL,source_id TEXT NOT NULL,payload_json TEXT NOT NULL,PRIMARY KEY(epoch,source_id))');
+  broken.exec("CREATE TRIGGER authored_refusal_failure BEFORE INSERT ON paper_replay_print_refusals BEGIN SELECT RAISE(ABORT,'authored refusal storage failure'); END;");
+  await expect(replayPaperEpoch(f.epoch,broken,f.config,logger)).rejects.toThrow('authored refusal storage failure');
+  expect((broken.prepare('SELECT COUNT(*) n FROM paper_replay_print_refusals').get() as any).n).toBe(0);const cursor=broken.prepare('SELECT * FROM paper_replay_cursor').get() as any;expect(cursor).toBeTruthy();
+  broken.exec('DROP TRIGGER authored_refusal_failure');await replayPaperEpoch(f.epoch,broken,f.config,logger);expect(state(broken)).toEqual(state(control));
  });
 
 });
