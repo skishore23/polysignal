@@ -104,7 +104,7 @@ export class PaperFillSession {
         enableBidQuotes: true, enableAskQuotes: true, rebateShareAssumption: 0, liquidityRewardBpsWhenScoring: 0,
       }, { sqlite: db, logger, belief, regimeGate: this.gate, quoteConstraints: (token, market, context) => {
         const row = db.prepare('SELECT minimum_order_size FROM markets WHERE id=?').get(market) as any;
-        const snap = this.execution.snapshot();
+        const snap = this.execution.fundingSnapshot();
         const old = context?.replacementOrderId == null ? null : db.prepare("SELECT * FROM shadow_orders WHERE id=? AND status IN ('OPEN','PARTIAL')").get(context.replacementOrderId) as any;
         let liability = snap.availableBuyUSDC;
         if (context?.side === 'SELL') {

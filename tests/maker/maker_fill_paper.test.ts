@@ -36,6 +36,7 @@ describe('actual ordinary MakerLoop with separately typed conserving paper sink'
     vi.spyOn(Date,'now').mockImplementation(()=>at.utc);
     let session = new PaperFillSession(db,config,()=>at,logger);
     try {
+      const quoteSnapshotSpy = vi.spyOn(session.execution, 'snapshot');
       for (let s=1;s<=40;s++) {
         at={utc:START+s*1000,mono:s*1000}; const b=book(s%2 ? '0.49':'0.48');
         source.process({kind:'frame',at,raw:JSON.stringify({...b,event_type:'book'})});
@@ -44,6 +45,9 @@ describe('actual ordinary MakerLoop with separately typed conserving paper sink'
         session.execution.observeBook({sourceId:b.hash,market:'45',token:'111',bids:b.bids,asks:b.asks,tick:'0.01',lot:d.book.lot,minimumShares:d.book.minimumShares,minimumNotionalUSDC:d.book.minimum,at,venueUtc:at.utc});
         await session.sample(d);
       }
+      // Ordinary quote sizing must not materialize the cumulative audit history.
+      expect(quoteSnapshotSpy).not.toHaveBeenCalled();
+      quoteSnapshotSpy.mockRestore();
       const all = session.execution.snapshot().orders as any[];
       expect(all.length).toBeGreaterThan(0);
       const order=all.find(o=>o.status==='OPEN'&&o.side==='BUY'); expect(order).toBeDefined();

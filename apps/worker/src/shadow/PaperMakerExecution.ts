@@ -223,12 +223,15 @@ export class PaperMakerExecution {
    return {duplicate:false,allocatedShares:text(allocated),aheadConsumedShares:text(aheadConsumed)};
   })();
  }
- snapshot(){const rows=this.active();let reserved=0n;const sell:Record<string,bigint>={};
+ /** Exact current funding constraints, without loading historical execution rows. */
+ fundingSnapshot(){const rows=this.active();let reserved=0n;const sell:Record<string,bigint>={};
   for(const r of rows){if(r.side==='BUY')reserved+=units(r.price)*units(r.remaining);else sell[r.token]=(sell[r.token]??0n)+units(r.remaining);}
   const cash=BigInt(this.account()!.cash),exposureRemaining=units(this.policy.maxExposure)*S-(units(this.policy.openingCash)*S-cash)-reserved;
   const available=min(min(cash-reserved,exposureRemaining),units(this.policy.maxExposure)*S-reserved);
   return {cashUSDC:text(cash,C),shares:Object.fromEntries((this.db.prepare('SELECT * FROM paper_execution_positions ORDER BY token').all() as Row[]).map(r=>[r.token,text(BigInt(r.shares))])),
-   reservedBuyUSDC:text(reserved,C),reservedSellShares:Object.fromEntries(Object.entries(sell).map(([k,v])=>[k,text(v)])),availableBuyUSDC:text(available>0n?available:0n,C),
+   reservedBuyUSDC:text(reserved,C),reservedSellShares:Object.fromEntries(Object.entries(sell).map(([k,v])=>[k,text(v)])),availableBuyUSDC:text(available>0n?available:0n,C)};
+ }
+ snapshot(){return {...this.fundingSnapshot(),
    settlements:this.db.prepare('SELECT * FROM paper_execution_settlements ORDER BY rowid').all(),
    orders:this.db.prepare('SELECT * FROM shadow_orders ORDER BY id').all(),queues:this.db.prepare('SELECT * FROM paper_execution_queues ORDER BY token,side,price').all(),
    trades:this.db.prepare('SELECT * FROM paper_execution_trades ORDER BY rowid').all(),allocations:this.db.prepare('SELECT * FROM paper_execution_allocations ORDER BY rowid').all(),
