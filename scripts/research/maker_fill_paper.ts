@@ -2,7 +2,7 @@
 import Database from 'better-sqlite3';
 import {spawn} from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, constants, copyFileSync, createReadStream, existsSync, fstatSync, fsyncSync, lstatSync, linkSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, statSync, statfsSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, copyFileSync, createReadStream, existsSync, fstatSync, fsyncSync, lstatSync, linkSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, statSync, statfsSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -16,7 +16,32 @@ import { selectCurrentBtcMarket, syncEngineInputs } from './maker_paper_startup'
 import type { RawCapture } from './maker_startup_capture';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
-const hash = (v: string | Buffer) => createHash('sha256').update(v).digest('hex');
+const UTF8_CHUNK_CODE_UNITS=16384;
+/** Preserve native short-string/binary semantics; bound only long UTF8 staging. */
+export const hashValue = (v:string|Buffer) => {const digest=createHash('sha256');
+ if(typeof v==='string'&&v.length>UTF8_CHUNK_CODE_UNITS)forEachUtf8Chunk(v,(buffer,bytes)=>digest.update(buffer.subarray(0,bytes)));
+ else digest.update(v);
+ return digest.digest('hex');
+};
+const hash=hashValue;
+/** One bounded backing buffer per synchronous encoding call; the full JSON string remains. */
+function forEachUtf8Chunk(value:string,visit:(buffer:Buffer,bytes:number)=>void){
+ const scratch=Buffer.allocUnsafe(Math.min(value.length,UTF8_CHUNK_CODE_UNITS)*3);
+ for(let start=0;start<value.length;){let end=Math.min(start+UTF8_CHUNK_CODE_UNITS,value.length);
+  // Never encode the two halves of a valid surrogate pair separately.
+  if(end<value.length){const tail=value.charCodeAt(end-1);if(tail>=0xD800&&tail<=0xDBFF)end--;}
+  const piece=value.slice(start,end),bytes=scratch.write(piece,0,scratch.length,'utf8');
+  need(bytes>0&&bytes===Buffer.byteLength(piece,'utf8'),'utf8_chunk_encoding');
+  visit(scratch,bytes);start=end;
+ }
+}
+/** Exact UTF8 bytes at the current fd position, including positive partial writes. */
+export function writeWireSync(fd:number,wire:string){forEachUtf8Chunk(wire,(buffer,bytes)=>{
+ let offset=0;while(offset<bytes){const written=writeSync(fd,buffer,offset,bytes-offset);
+  need(Number.isInteger(written)&&written>0&&written<=bytes-offset,'wire_write_progress');offset+=written;
+ }
+});}
+
 // Every byte is freshly hashed. The shared synchronous scratch buffer is bounded,
 // independently of report/history length; there is deliberately no digest cache.
 const FILE_HASH_SCRATCH=Buffer.allocUnsafe(64*1024);
@@ -411,7 +436,7 @@ function regularPin(pin:FilePin){need(pin&&typeof pin.path==='string'&&/^[a-f0-9
 function verifyPin(pin:FilePin){need(pin&&typeof pin.path==='string'&&/^[a-f0-9]{64}$/.test(pin.sha256),'file_pin');need(realpathSync(pin.path)===path.resolve(pin.path)&&lstatSync(pin.path).isFile()&&!lstatSync(pin.path).isSymbolicLink(),'file_pin_identity');need(hashFileSync(pin.path)===pin.sha256,'file_pin_changed:'+pin.path);}
 function syncDirectory(dir:string){const fd=openSync(dir,'r');try{fsyncSync(fd)}finally{closeSync(fd)}}
 const atomic=(file:string,value:unknown)=>{const tmp=file+'.'+randomUUID()+'.tmp';const fd=openSync(tmp,'wx',0o600);try{writeFileSync(fd,JSON.stringify(value,null,2)+'\n');fsyncSync(fd)}finally{closeSync(fd)}renameSync(tmp,file);syncDirectory(path.dirname(file));};
-function immutable(file:string,value:unknown,captureWireDigest=false){const tmp=file+'.'+randomUUID()+'.publishing';const fd=openSync(tmp,'wx',0o600);let wireDigest:string|undefined;try{const wire=JSON.stringify(value,null,2)+'\n';writeFileSync(fd,wire);if(captureWireDigest)wireDigest=hash(wire);fsyncSync(fd)}finally{closeSync(fd)}
+function immutable(file:string,value:unknown,captureWireDigest=false){const tmp=file+'.'+randomUUID()+'.publishing';const fd=openSync(tmp,'wx',0o600);let wireDigest:string|undefined;try{const wire=JSON.stringify(value,null,2)+'\n';writeWireSync(fd,wire);if(captureWireDigest)wireDigest=hash(wire);fsyncSync(fd)}finally{closeSync(fd)}
   try{linkSync(tmp,file);syncDirectory(path.dirname(file));}finally{unlinkSync(tmp);}syncDirectory(path.dirname(file));return wireDigest;}
 function ownedJSON(file:string){need(lstatSync(file).isFile()&&!lstatSync(file).isSymbolicLink()&&realpathSync(file)===file,'published_file_identity');return JSON.parse(readFileSync(file,'utf8'));}
 export function verifyFollowerKernelLock(outputDirectory:string){

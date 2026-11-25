@@ -74,6 +74,35 @@ async function standingFixture(version:'v1'|'v2'='v1'){
  };return {...f,command,calls:()=>calls};
 }
 describe('fresh full report publication projection, authored sources only',()=>{
+ it('publishes the intended complete Unicode wire through one bounded UTF8 backing buffer',async()=>{
+  const f=await fixture('warm'),epoch=path.join(f.source,'epoch-000002'),target=path.join(f.output,'epoch-000002.json');
+  const originalStringify=JSON.stringify,originalFileWrite=fs.writeFileSync,originalOpen=fs.openSync,originalClose=fs.closeSync,originalWrite=fs.writeSync;
+  let expectedWire='',wholeWrites=0,reportFd:number|null=null,maxBacking=0,chunks=0;const backings=new Set<ArrayBufferLike>();
+  const stringify=vi.spyOn(JSON,'stringify').mockImplementation(((value:any,replacer:any,space:any)=>{
+   if(value?.schema==='CONSERVING_PAPER_EPOCH_RESULT_V1'&&value.epoch===epoch&&'wireFrameCount'in value){value={...value,authoredUnicode:'x'.repeat(16383)+'😀π中'.repeat(20000),resources:{authored:true}};expectedWire=originalStringify(value,replacer,space)+'\n';return expectedWire.slice(0,-1)}
+   return originalStringify(value,replacer,space);
+  }) as typeof JSON.stringify);
+  const opened=vi.spyOn(fs,'openSync').mockImplementation(((file:any,...args:any[])=>{const fd=(originalOpen as any)(file,...args);if(String(file).startsWith(target+'.'))reportFd=fd;return fd}) as any);
+  const closed=vi.spyOn(fs,'closeSync').mockImplementation(((fd:any)=>{if(fd===reportFd)reportFd=null;return originalClose(fd)}) as any);
+  const oldWrite=vi.spyOn(fs,'writeFileSync').mockImplementation(((fd:any,value:any,...args:any[])=>{if(fd===reportFd&&value===expectedWire)wholeWrites++;return (originalFileWrite as any)(fd,value,...args)}) as any);
+  const bounded=vi.spyOn(fs,'writeSync').mockImplementation(((fd:any,buffer:any,offset:any,length:any,...args:any[])=>{if(fd===reportFd){chunks++;expect(Buffer.isBuffer(buffer)).toBe(true);backings.add(buffer.buffer);maxBacking=Math.max(maxBacking,buffer.byteLength)}return (originalWrite as any)(fd,buffer,offset,length,...args)}) as any);syncBuiltinESMExports();
+  try{await runPaperFollower(f.admissionFile,{maxCycles:1})}finally{stringify.mockRestore();opened.mockRestore();closed.mockRestore();oldWrite.mockRestore();bounded.mockRestore();syncBuiltinESMExports()}
+  expect(expectedWire.length).toBeGreaterThan(49152);expect(wholeWrites).toBe(0);expect(chunks).toBeGreaterThan(1);expect(backings.size).toBe(1);expect(maxBacking).toBeLessThanOrEqual(49152);
+  const reference=path.join(f.root,'native-full-wire-reference'),fd=openSync(reference,'wx');try{writeFileSync(fd,expectedWire)}finally{closeSync(fd)}
+  expect(readFileSync(target)).toEqual(readFileSync(reference));const db=new Database(path.join(f.output,'paper.sqlite'),{readonly:true});try{expect((db.prepare('SELECT result_sha FROM paper_consumed_epochs WHERE epoch=2').get() as any).result_sha).toBe(hash(readFileSync(reference)))}finally{db.close()}
+ });
+ it('preserves committed state after a partial report write failure and resumes without a duplicate fill',async()=>{
+  const f=await fixture('warm'),target=path.join(f.output,'epoch-000002.json'),originalOpen=fs.openSync,originalClose=fs.closeSync,originalWrite=fs.writeSync;let reportFd:number|null=null,writes=0;
+  const opened=vi.spyOn(fs,'openSync').mockImplementation(((file:any,...args:any[])=>{const fd=(originalOpen as any)(file,...args);if(String(file).startsWith(target+'.'))reportFd=fd;return fd}) as any);
+  const closed=vi.spyOn(fs,'closeSync').mockImplementation(((fd:any)=>{if(fd===reportFd)reportFd=null;return originalClose(fd)}) as any);
+  const failed=vi.spyOn(fs,'writeSync').mockImplementation(((fd:any,buffer:any,offset:any,length:any,...args:any[])=>{if(fd===reportFd){if(writes++)throw Object.assign(new Error('authored report EIO'),{code:'EIO'});return (originalWrite as any)(fd,buffer,offset,Math.min(7,length),...args)}return (originalWrite as any)(fd,buffer,offset,length,...args)}) as any);syncBuiltinESMExports();
+  try{await expect(runPaperFollower(f.admissionFile,{maxCycles:1})).rejects.toThrow('authored report EIO')}finally{opened.mockRestore();closed.mockRestore();failed.mockRestore();syncBuiltinESMExports()}
+  expect(existsSync(target)).toBe(false);expect(readdirSync(f.output).some(n=>n.endsWith('.publishing'))).toBe(true);
+  const tables=['shadow_orders','shadow_fills','accounting_events','paper_execution_account','paper_execution_positions','paper_replay_cursor'];
+  const snapshot=()=>{const db=new Database(path.join(f.output,'paper.sqlite'),{readonly:true});try{expect((db.prepare('SELECT count(*) n FROM accounting_events WHERE kind=\'OPENING\'').get() as any).n).toBe(1);return Object.fromEntries(tables.map(t=>[t,db.prepare('SELECT * FROM '+t+' ORDER BY rowid').all()]))}finally{db.close()}};
+  const before=snapshot();await runPaperFollower(f.admissionFile,{maxCycles:1});expect(snapshot()).toEqual(before);
+  const db=new Database(path.join(f.output,'paper.sqlite'),{readonly:true});try{expect((db.prepare('SELECT count(*) n FROM paper_consumed_epochs WHERE epoch=2').get() as any).n).toBe(1);expect((db.prepare('SELECT result_sha FROM paper_consumed_epochs WHERE epoch=2').get() as any).result_sha).toBe(hash(readFileSync(target)))}finally{db.close()}
+ });
  it('publishes identical complete UTF8 bytes/state/SQL while eliminating the fresh full-report parse',async()=>{
   const f=await fixture('warm'),epoch=path.join(f.source,'epoch-000002'),originalStringify=JSON.stringify;
   const stringify=vi.spyOn(JSON,'stringify').mockImplementation(((value:any,replacer:any,space:any)=>{
