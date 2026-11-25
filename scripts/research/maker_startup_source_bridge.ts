@@ -160,7 +160,7 @@ function venueTime(value: unknown, receiveUtc: number) {
 }
 
 export function deriveMakerStartupInputs(input: MakerStartupSourceInput,
-  options: { classifyRestTickMismatch?: boolean; classifyInitialSnapshotUnavailable?: boolean } = {}) {
+  options: { classifyRestTickMismatch?: boolean; classifyInitialSnapshotUnavailable?: boolean; classifyMetadataTickMismatch?: boolean } = {}) {
   ordered(input.gamma.at, input.clobMarket.at);
   ordered(input.clobMarket.at, input.clobBook.at);
   ordered(input.gamma.at, input.decision);
@@ -208,14 +208,18 @@ export function deriveMakerStartupInputs(input: MakerStartupSourceInput,
   const jointUnavailable = classifyUnavailable && metadataTickMismatch && emptySnapshot
     && restTick.units === gammaTick.units;
   const cleanEmpty = classifyUnavailable && emptySnapshot && !metadataTickMismatch && !restTickMismatch;
-  check(!metadataTickMismatch || jointUnavailable, "tick_or_minimum");
+  // Prospective availability classification only: never supply a disagreeing grid to a quote.
+  const cleanMetadataMismatch = options.classifyMetadataTickMismatch === true && metadataTickMismatch
+    && gammaTick.units === 10000000n && tick.units === 1000000n && !restTickMismatch
+    && Array.isArray(rest.bids) && Array.isArray(rest.asks);
+  check(!metadataTickMismatch || jointUnavailable || cleanMetadataMismatch, "tick_or_minimum");
   // A mismatch never supplies accepted quote terms. The operating caller may
   // classify it only after validating the whole REST snapshot on its own grid
   // and the remaining fee schemas. Contradictory minima still fail closed.
-  if (restTickMismatch || jointUnavailable) {
+  if (restTickMismatch || jointUnavailable || cleanMetadataMismatch) {
     check(minimumShares.units === marketMinimum.units && marketMinimum.units === minimum.units, "book_market_limits");
     check(Array.isArray(rest.bids) && Array.isArray(rest.asks)
-      && (jointUnavailable || (rest.bids.length > 0 && rest.asks.length > 0)),
+      && (jointUnavailable || cleanMetadataMismatch || (rest.bids.length > 0 && rest.asks.length > 0)),
       "rest_tick_mismatch_snapshot");
     check(input.stream.length === 0, "rest_tick_mismatch_stream");
   }
@@ -266,7 +270,7 @@ export function deriveMakerStartupInputs(input: MakerStartupSourceInput,
       rawSha256: digest(raw), anchorSha256: digest(raw), venueHash: hash as string | null };
     return { observation, snapshot: { tokenId: token, marketId: market, hash, bids, asks, ts: venueUtc, recvTsMs: at.utc } };
   }
-  const initial = parseSnapshot(rest, input.clobBook.at, input.clobBook.raw, restTick, jointUnavailable || cleanEmpty);
+  const initial = parseSnapshot(rest, input.clobBook.at, input.clobBook.raw, restTick, jointUnavailable || cleanEmpty || cleanMetadataMismatch);
   store.upsertSnapshot(initial.snapshot);
   let book = initial.observation;
   let previous = input.clobBook.at;
@@ -279,8 +283,9 @@ export function deriveMakerStartupInputs(input: MakerStartupSourceInput,
   }
   const makerBaseFee = baseFee(v2 ? m.mbf : m.maker_base_fee);
   const takerBaseFee = baseFee(v2 ? m.tbf : m.taker_base_fee);
-  if (restTickMismatch || jointUnavailable || cleanEmpty) {
+  if (restTickMismatch || jointUnavailable || cleanEmpty || cleanMetadataMismatch) {
     ordered(previous, input.decision);
+    if (cleanMetadataMismatch) throw Error("maker_source:validated_metadata_tick_mismatch");
     if (jointUnavailable)
       throw Error("maker_source:validated_initial_snapshot_unavailable");
     if (cleanEmpty) throw Error("maker_source:empty_book_side");

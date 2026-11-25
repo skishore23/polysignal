@@ -18,7 +18,7 @@ function setup(options: { slots?: number; samples?: number; minimum?: number; fa
   badSampleAt?: number; afterSample?: (out: string) => void; emptyBookFirstAttempt?: boolean; malformedBookFirstAttempt?: boolean;
   mixedArchiveFaultFirstAttempt?: boolean; mixedBookSidesFirstAttempt?: boolean; missingMetadataAttempts?: number;
   noEligibleAttempts?: number; malformedGammaIdentity?: boolean; tickChangeFirstAttempt?: boolean;
-  restTickMismatchAttempts?: number; restTickMismatchNegRisk?: boolean;
+  restTickMismatchAttempts?: number; restTickMismatchNegRisk?: boolean; metadataTickMismatchAttempts?: number;
   mixedUnavailableAttempts?: number; malformedHttp?: "metadata"|"market"|"book"|"fee"; nullGamma?:boolean; expireOnMalformed?:boolean;
   backdatedDeltaFirstAttempt?: boolean; mixedBackdatedFirstAttempt?: boolean; duplicateBackdatedFirstAttempt?: boolean } = {}) {
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
@@ -45,7 +45,8 @@ function setup(options: { slots?: number; samples?: number; minimum?: number; fa
     const offset = utc - slot; let sequence = 0, open = false, priorBid = '0.49';
     const minimum = options.minimum ?? .1;
     const tick = (options.tickChangeFirstAttempt && attempt > 1)
-      || (options.restTickMismatchAttempts && attempt > options.restTickMismatchAttempts) ? .001 : .01;
+      || (options.restTickMismatchAttempts && attempt > options.restTickMismatchAttempts)
+      || (options.metadataTickMismatchAttempts && attempt > options.metadataTickMismatchAttempts) ? .001 : .01;
     const gamma = { version: 'v2', id: '123', conditionId: options.malformedGammaIdentity ? 'invalid-condition' : CONDITION, slug: `btc-updown-5m-${slot / 1000}`,
       question: 'Bitcoin Up or Down, five minutes', description: 'Authored offline operating fixture',
       eventStartTime: new Date(slot).toISOString(), endDate: new Date(slot + 300000).toISOString(),
@@ -64,10 +65,11 @@ function setup(options: { slots?: number; samples?: number; minimum?: number; fa
       bindMarket: (x: unknown) => { capture.bound = x; },
       readMarket: async () => { capture.calls.push('market'); utc++;
         return http(`https://clob.polymarket.com/clob-markets/${CONDITION}`, { t: [{ t: '111', o: 'Up' }, { t: '222', o: 'Down' }],
-          mos: minimum, mts: attempt <= (options.mixedUnavailableAttempts ?? 0) ? .001 : tick,
+          mos: minimum, mts: attempt <= (options.mixedUnavailableAttempts ?? 0) || attempt <= (options.metadataTickMismatchAttempts ?? 0) ? .001 : tick,
           mbf: 0, tbf: 10, fd: { r: .25, e: 1, to: true }, oas: 0 }); },
       readBook: async () => { capture.calls.push('book'); utc++; const row = book();
         if (attempt <= (options.mixedUnavailableAttempts ?? 0)) row.asks = [];
+        if (attempt <= (options.metadataTickMismatchAttempts ?? 0)) row.tick_size = '0.001';
         if (attempt <= (options.restTickMismatchAttempts ?? 0)) {
           row.tick_size = '0.001';
           if (options.restTickMismatchNegRisk) row.neg_risk = true;
@@ -464,7 +466,7 @@ describe('ordinary continuous operating integration, authored offline inputs onl
   it('opens no socket or quote on REST tick disagreement and quotes only after fresh matching metadata and history', async () => {
     const f = setup({ restTickMismatchAttempts: 1 }); vi.spyOn(Date, 'now').mockImplementation(() => f.clock().utc);
     const state = await f.run(), log = events(f.out);
-    expect(OPERATING_PROTOCOL.schema).toBe('ORDINARY_PAPER_MAKER_OPERATING_V8');
+    expect(OPERATING_PROTOCOL.schema).toBe('ORDINARY_PAPER_MAKER_OPERATING_V9');
     expect(OPERATING_PROTOCOL.source.activityMetricRepresentation).toContain('trading quantity scale9 precision unchanged');
     expect(f.captures.map(c => c.attempt)).toEqual([1, 2]); expect(f.captures.map(c => c.streamCalls)).toEqual([0, 1]);
     expect(f.captures.every(c => c.calls.join(',') === 'metadata,market,book,fee' && c.settled)).toBe(true);
@@ -478,6 +480,21 @@ describe('ordinary continuous operating integration, authored offline inputs onl
     expect(first.snapshot.contract.book.tick).toBe('0.001'); expect(first.samples.records).toBeGreaterThanOrEqual(13);
     expect(state.status).toBe('OFFLINE_FINISHED'); expect(state.virtualCashUSDC).toBe('100');
     expect(state.activeOrders).toBe(0); expect(state.pendingLiabilityNumerator).toBe('0'); expect(state.fills).toBe(0);
+  });
+  it('resyncs validated Gamma/CLOB disagreement without any mismatched-grid socket or quote', async () => {
+    const f=setup({metadataTickMismatchAttempts:1});vi.spyOn(Date,'now').mockImplementation(()=>f.clock().utc);
+    const state=await f.run(),log=events(f.out);
+    expect(f.captures.map(c=>c.attempt)).toEqual([1,2]);expect(f.captures.map(c=>c.streamCalls)).toEqual([0,1]);
+    expect(log.find(e=>e.kind==='SOURCE_ATTEMPT_FAULT').error).toBe('Error: maker_source:validated_metadata_tick_mismatch');
+    expect(log.find(e=>e.kind==='FRESH_RESYNC_GAP').reason).toBe('metadata_tick_mismatch');
+    const quotes=log.filter(e=>e.kind==='PAPER_QUOTE');expect(quotes.length).toBeGreaterThan(0);
+    expect(quotes.every(q=>q.epoch===2)).toBe(true);expect(state.virtualCashUSDC).toBe('100');expect(state.pendingLiabilityNumerator).toBe('0');
+  });
+  it('preserves three-attempt debt for persistent validated metadata tick disagreement',async()=>{
+    const f=setup({metadataTickMismatchAttempts:3});vi.spyOn(Date,'now').mockImplementation(()=>f.clock().utc);
+    const state=await f.run();expect(f.captures.map(c=>c.attempt)).toEqual([1,2,3]);expect(f.captures.map(c=>c.streamCalls)).toEqual([0,0,0]);
+    expect(state.status).toBe('OFFLINE_FINISHED');expect(state.totalQuotes).toBe(0);expect(state.virtualCashUSDC).toBe('100');
+    await f.run();expect(f.captures).toHaveLength(3);expect(state.activeOrders).toBe(0);
   });
   it('consumes at most the same three attempts for persistent REST tick disagreement without any socket or quote', async () => {
     const f = setup({ restTickMismatchAttempts: 3 }); vi.spyOn(Date, 'now').mockImplementation(() => f.clock().utc);

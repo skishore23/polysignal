@@ -76,7 +76,7 @@ export function createOperatingSourceState(
       check(q.units>0n && !seen.has(p.units),"duplicate_or_empty_level");seen.add(p.units);}
   }
   const base = sourceJson(() => deriveMakerStartupInputs({ ...input, stream: [] }, {
-    classifyRestTickMismatch: true, classifyInitialSnapshotUnavailable: true,
+    classifyRestTickMismatch: true, classifyInitialSnapshotUnavailable: true, classifyMetadataTickMismatch: true,
   }));
   const { identity } = base;
   const { token, market, condition } = identity;

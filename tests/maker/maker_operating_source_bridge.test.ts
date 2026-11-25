@@ -581,3 +581,39 @@ it.skipIf(!existsSync(join(v6metric, "ledger.json")))("accepts original retained
   }
   expect(hash(gamma.raw)).toBe(pins.metadata);
 });
+
+
+describe("prospective supported Gamma/CLOB disagreement availability", () => {
+  function mismatch(){ const f=fixture(),m=JSON.parse(f.clobMarket.raw),b=JSON.parse(f.clobBook.raw);
+    m.minimum_tick_size=.001;b.tick_size="0.001";b.bids[1].price="0.471";
+    f.clobMarket.raw=JSON.stringify(m);f.clobBook.raw=JSON.stringify(b);return f; }
+  it.each([false,true])("fully validates before refusing terms, empty=%s",empty=>{
+    const f=mismatch();if(empty){const b=JSON.parse(f.clobBook.raw);b.asks=[];f.clobBook.raw=JSON.stringify(b);}
+    const before=JSON.stringify(f);
+    expect(()=>deriveMakerStartupInputs({...f,stream:[]})).toThrow(/^maker_source:tick_or_minimum$/);
+    expect(()=>createOperatingSourceState(f)).toThrow(/^maker_source:validated_metadata_tick_mismatch$/);
+    expect(JSON.stringify(f)).toBe(before);
+  });
+  it.each([
+    ["wrongtoken",(f:any,b:any)=>{b.asset_id="999"}],
+    ["wrongcondition",(f:any,b:any)=>{b.market="0x"+"b".repeat(64)}],
+    ["wrongversion",(f:any,b:any)=>{b.version="v2"}],
+    ["hash",(f:any,b:any)=>{delete b.hash}],
+    ["negativelevel",(f:any,b:any)=>{b.bids[0].size="-1"}],
+    ["offgrid",(f:any,b:any)=>{b.bids[0].price="0.43001"}],
+    ["duplicates",(f:any,b:any)=>{b.bids.push(b.bids[0])}],
+    ["minimum",(f:any,b:any)=>{b.min_order_size="6"}],
+    ["negativerisk",(f:any,b:any)=>{b.neg_risk=true}],
+    ["nullside",(f:any,b:any)=>{b.asks=null}],
+    ["unsupportedtick",(f:any,b:any)=>{b.tick_size="0.0005"}],
+    ["futurevenue",(f:any,b:any)=>{b.timestamp=String(start+11)}],
+    ["crossed",(f:any,b:any)=>{b.bids[0].price="0.6"}],
+    ["fee",(f:any,b:any)=>{f.tokenFee.raw='{"base_fee":true}'}],
+    ["marketfee",(f:any,b:any)=>{const m=JSON.parse(f.clobMarket.raw);m.maker_base_fee=-1;f.clobMarket.raw=JSON.stringify(m)}],
+    ["feetime",(f:any,b:any)=>{f.tokenFee.at=at(13)}],
+  ] as const)("malformed %s remains fatal",(_label,mutate)=>{
+    const f=mismatch(),b=JSON.parse(f.clobBook.raw);mutate(f,b);f.clobBook.raw=JSON.stringify(b);
+    let e:unknown;try{createOperatingSourceState(f)}catch(error){e=error}
+    expect(e).toBeInstanceOf(Error);expect(String(e)).not.toContain("validated_metadata_tick_mismatch");
+  });
+});

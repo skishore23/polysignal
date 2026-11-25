@@ -17,7 +17,7 @@ export const sha = (x: string | Buffer) => createHash("sha256").update(x).digest
 const json = (x: unknown) => JSON.stringify(x, null, 2) + "\n";
 function check(x: unknown, why: string): asserts x { if (!x) throw Error("maker_operating:" + why); }
 export const OPERATING_PROTOCOL = {
-  schema: "ORDINARY_PAPER_MAKER_OPERATING_V8", venue: "POLYMARKET_ONLY", profile: "OPERATING_BURST_V1",
+  schema: "ORDINARY_PAPER_MAKER_OPERATING_V9", venue: "POLYMARKET_ONLY", profile: "OPERATING_BURST_V1",
   account: PAPER_PROFILES.OPERATING_BURST_V1, sizing: "soft20USDC*positive_regime; exact legal venue floor within hard limits",
   inventoryPreference: "configured K50bps at full200share capacity; changed prospective convention",
   noFills: true, noLiveOrders: true, noPi: true, rewards: false, stopAtFirstQuote: false,
@@ -27,6 +27,7 @@ export const OPERATING_PROTOCOL = {
     activityMetricRepresentation: "raw receipt decimals preserved; finite nonnegative plain-decimal volume/liquidity convert to existing Number/SQLite REAL observations with approximation, exact MAX_SAFE bound and no positive underflow; trading quantity scale9 precision unchanged",
     tickChange: "validated original-token tick event cancels and requires four fresh reads; never change grid in place",
     restTickMismatch: "validated supported REST tick disagreement rejects all terms and requires four fresh reads within existing attempt debt; never adopt the disagreeing grid",
+    metadataTickMismatch: "fully validated Gamma0.01/CLOB0.001/REST0.001 schema-valid book is unavailable; cancel, same three-attempt debt/fresh reads, then next slot; no grid adoption or quote until all agree",
     initialSnapshotUnavailable: "only the fully validated joint pattern: supported CLOB tick disagrees with Gamma, REST tick equals Gamma, and REST has an empty side; reject all terms, same four-read resync and three-attempt debt then next slot; other mismatches/malformed evidence remain fatal",
     oldDelta: "fully validated singleton old delta cancels and requires four fresh reads/history; never apply or continue the old chain",
     emptyBook: "cancel and fresh resync within existing attempts; malformed side schema remains correctness fault", rawFrameMaxBytes: 2097152,
@@ -67,7 +68,7 @@ export function isUnavailableEmptyBook(error: unknown): boolean {
     || error.message === "operating:Error: maker_source:empty_book_side:";
 }
 /** Exact clean causes only: an archive/schema failure appended by cleanup stays fatal. */
-export function operatingUnavailableReason(error: unknown): "empty_book"|"metadata_not_ready"|"tick_size_change"|"backdated_delta"|"rest_tick_mismatch"|"initial_snapshot_unavailable"|null {
+export function operatingUnavailableReason(error: unknown): "empty_book"|"metadata_not_ready"|"tick_size_change"|"backdated_delta"|"rest_tick_mismatch"|"initial_snapshot_unavailable"|"metadata_tick_mismatch"|null {
   if (!(error instanceof Error)) return null;
   if(isUnavailableEmptyBook(error))return "empty_book";
   if(error.message === "maker_operating:source_metadata:OBSERVED_MARKET_VOLUME_AND_LIQUIDITY")return "metadata_not_ready";
@@ -77,6 +78,8 @@ export function operatingUnavailableReason(error: unknown): "empty_book"|"metada
     || error.message === "operating:Error: maker_source:validated_backdated_delta:")return "backdated_delta";
   if(error.message === "maker_source:validated_rest_tick_mismatch"
     || error.message === "operating:Error: maker_source:validated_rest_tick_mismatch:")return "rest_tick_mismatch";
+  if(error.message === "maker_source:validated_metadata_tick_mismatch"
+    || error.message === "operating:Error: maker_source:validated_metadata_tick_mismatch:")return "metadata_tick_mismatch";
   if(error.message === "maker_source:validated_initial_snapshot_unavailable"
     || error.message === "operating:Error: maker_source:validated_initial_snapshot_unavailable:")return "initial_snapshot_unavailable";
   return null;

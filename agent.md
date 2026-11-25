@@ -244,3 +244,14 @@ record competing ordinary controls and recalibrate toward economic value through
 sound executable family representations. Neither fills nor constructions alone
 establish alpha, novelty, learning or cheaper lifetime cost. Unknown costs/PnL
 remain unknown. No live routing, signing, funding or framework is authorized.
+
+
+### Owner38: validated tick mismatch recovery
+
+The source V9 operating path treats the fully validated Gamma.01 versus
+CLOB/REST.001 pattern as unavailable, with the existing three-attempt resync
+debt and next-slot handoff. It never adopts a disagreeing grid. Default startup
+and malformed identity, fee, minimum and level evidence still fail closed.
+An old failed owner is preserved; reviewed successor custody carries its bank
+and counters. Source quote throughput remains separate from conserving paper
+fills, settlement and economic research.

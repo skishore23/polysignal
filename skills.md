@@ -214,3 +214,14 @@ Close capture callbacks, owned timers, reservations and DB with retained failure
   `tests/maker/maker_fill_replay_archive.test.ts`: adversarial authored allocation,
   accounting and actual archive/restart checks. Passing these is engineering,
   not real fills/profit or representation advantage.
+
+
+## V9 metadata tick availability
+
+`deriveMakerStartupInputs` has an opt-in `classifyMetadataTickMismatch` used only
+by the operating bridge after full input validation. Its typed refusal enters
+`operatingUnavailableReason`, sharing three attempts and requiring four fresh
+reads. `tests/maker/maker_operating_source_bridge.test.ts` checks malformed
+near-neighbors and strict default startup; `maker_operating.test.ts` checks
+exact clean error recognition and bounded slot handling. Do not generalize
+other mismatches or cleanup failures into availability.
