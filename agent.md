@@ -296,3 +296,26 @@ SQLite clock callbacks fail closed after release and a new core installs its
 own callback. Same-bank carry remains independently reviewed and no financial
 or source policy changes follow. A paired authored V4/V5 full report comparison
 checks exact normalized bytes, excluding only measured resource counters.
+
+
+### ENG035 isolated original-decision observation
+
+`scripts/research/maker_decision_checkpoint.ts` provides a default-off recorder
+for an explicitly isolated ordinary paper replay. The optional hooks in
+`maker_fill_paper.ts` record typed database/session cuts, original clock/cursor/RNG
+and the ordered native SQL/write stream through the first actual tick's enclosing
+transaction. Native timer dispatch, unsupported verbose payloads, incomplete
+state or exhausted evidence budgets make the observation INCOMPLETE; the recorder
+never certifies itself. `backupDecisionGenesis` streams a read-only native backup
+and validates the private image; it does not authorize reading a running bank.
+
+Regressions are in `tests/maker/maker_decision_checkpoint.test.ts` and the ENG035
+cases in `maker_fill_replay_archive.test.ts`. The literal ordinary reference is
+`scripts/research/.eng035-unmodified-ordinary.ts`, pinned to commit
+`5394d9788b4e88108e6bceb53b261d7676bc34b1`. Run only the independently admitted
+fixture scope with genuine local dependencies and private evidence ownership.
+A complete prospective decision capture still requires its own frozen source,
+clock, bank, resource and independent-verifier admission. Keep its raw private
+evidence; authored parity tests are engineering evidence, not a live decision,
+representation advantage, learned policy or economic reward. No CLI dispatch,
+existing follower/source upgrade or live permission is added by these hooks.

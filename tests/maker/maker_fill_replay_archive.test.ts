@@ -7,6 +7,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import type { IncomingMessage, ClientRequest } from 'node:http';
 import type WebSocket from 'ws';
+import Database from 'better-sqlite3';
+import { MakerLoop } from '../../apps/worker/src/maker/MakerLoop';
 import { OperatingSourceCapture, verifyOperatingCaptureArchive } from '../../scripts/research/maker_operating_capture';
 import { currentSlotMetadataUrl } from '../../scripts/research/maker_startup_capture';
 import { PaperMakerExecution, type PaperBook } from '../../apps/worker/src/shadow/PaperMakerExecution';
@@ -150,4 +152,136 @@ describe('actual archive-to-MakerLoop paper replay, all transports authored offl
   const run=(module:string,name:string)=>{const output=path.join(f.root,name+'.json'),r=spawnSync(process.execPath,['--import','tsx','tests/maker/fixtures/maker_fill_memory_probe.ts','replay-file',module,f.epoch,path.join(f.root,name+'.sqlite'),output],{encoding:'utf8',timeout:30000});expect(r.status,r.stderr).toBe(0);return JSON.parse(readFileSync(output,'utf8'))};const baseline=run(runner,'v4-control'),candidate=run(path.resolve('scripts/research/maker_fill_paper.ts'),'v5-candidate');expect(candidate).toEqual(baseline);expect(hash(readFileSync(path.join(f.root,'v5-candidate.json')))).toBe(hash(readFileSync(path.join(f.root,'v4-control.json'))));expect(candidate.fills.length).toBeGreaterThan(0);expect(candidate.terminal.snapshot.reservedBuyUSDC).toBe('0.000000000000000000');
  });
 
+});
+
+describe('ENG035 isolated first-decision observation',()=>{
+  it('compares one selected commit and the full epoch with an unchanged ordinary application on identical fork images',async()=>{
+    const source=path.resolve('scripts/research/.eng035-unmodified-ordinary.ts');
+    expect(hash(readFileSync(source))).toBe('5646ca465f79a62704d2221edaf3489ace0a69060fa64bf3771f675523d125a7');
+    const ordinary=await import('../../scripts/research/.eng035-unmodified-ordinary');
+    const {FirstDecisionRecorder,checkpointDatabaseDigest,checkpointWire}=await import('../../scripts/research/maker_decision_checkpoint');
+    const {copyFileSync}=await import('node:fs');
+    const f=await archive(),genesis=path.join(f.root,'original-genesis.sqlite');
+    // Archive construction uses authored clocks. The decision observation must
+    // exercise real native timers, not the fixture's interval substitution.
+    vi.useRealTimers();
+    ordinary.createPaperDatabase(genesis).close();
+    const onFile=path.join(f.root,'observed.sqlite'),offFile=path.join(f.root,'ordinary.sqlite');
+    copyFileSync(genesis,onFile);copyFileSync(genesis,offFile);
+    const recorder=new FirstDecisionRecorder(16*1024*1024);
+    const on=createPaperDatabase(onFile,recorder);
+    // The unchanged original factory establishes the identical persistent
+    // schema. Reopen only to attach SQLite's native, observational verbose API;
+    // restore its sole connection-local initialization (foreign_keys=ON).
+    ordinary.createPaperDatabase(offFile).close();
+    const referenceEffects:{kind:string;data:unknown}[]=[];
+    let inspecting=false,recording=false;
+    const off=new Database(offFile,{verbose(sql){
+      if(recording&&!inspecting)referenceEffects.push({kind:'SQLITE_TRACE',data:checkpointWire(sql)});
+    }});
+    off.pragma('foreign_keys = ON');
+    const originalPrepare=off.prepare,originalExec=off.exec;
+    const observe=<T,>(kind:string,sql:string,args:unknown[],call:()=>T):T=>{
+      if(inspecting||!recording)return call();
+      referenceEffects.push({kind:'WRITE_BEGIN',data:checkpointWire({kind,sql,args})});
+      try{const value=call();referenceEffects.push({kind:'WRITE_RETURN',data:checkpointWire(kind==='exec'?null:value)});return value}
+      catch(error){referenceEffects.push({kind:'WRITE_THROW',data:checkpointWire(error)});throw error}
+    };
+    off.prepare=function(this:Database.Database,sql:string){const statement=originalPrepare.call(this,sql),run=statement.run;
+      statement.run=function(this:Database.Statement,...args:unknown[]){return observe('run',statement.source,args,()=>Reflect.apply(run,this,args))};return statement} as typeof off.prepare;
+    off.exec=function(this:Database.Database,sql:string){return observe('exec',sql,[],()=>originalExec.call(this,sql))};
+    dbs.push(on,off);
+    expect(checkpointDatabaseDigest(on)).toEqual(checkpointDatabaseDigest(off));
+    const log=(rows:unknown[])=>Object.fromEntries(['info','warn','error','debug','trace','fatal'].map(k=>[k,(...args:unknown[])=>rows.push([k,structuredClone(args)])]));
+    const logsOn:unknown[]=[],logsOff:unknown[]=[];
+    const captured=await replayPaperEpoch(f.epoch,on,f.config,log(logsOn),undefined,recorder),packet=recorder.result();
+    expect(packet.status).toBe('REQUIRES_INDEPENDENT_PARITY_AND_CUSTODY');
+    expect(packet.disposition).toBe('COMMITTED');expect(packet.verifiedComplete).toBe(false);
+    expect(packet.selectedSample!.current).toBe(true);
+    expect(packet.orderedTrace.filter(r=>r.kind==='TICK_ENTER')).toHaveLength(1);
+    expect(packet.orderedTrace.some(r=>r.kind==='SQLITE_TRACE')).toBe(true);
+    expect(packet.orderedTrace.some(r=>r.kind==='WRITE_BEGIN')).toBe(true);
+    type OrdinarySessionView={
+      clock:()=>{utc:number;mono:number};seen:Set<string>;lastTick:number;terms:Map<string,unknown>;
+      gate:{getLoadDiagnostics:()=>unknown};
+    };
+    const sessionState=(view:OrdinarySessionView)=>({
+      seen:[...view.seen],lastTick:view.lastTick,terms:[...view.terms],regime:view.gate.getLoadDiagnostics(),
+    });
+    let referenceSession:OrdinarySessionView|undefined;
+    let originalPrestateChecked=false,originalTickChecked=false,referenceCommitted=false;
+    let atEntry:{utc:number;mono:number}|undefined,sessionAtEntry:ReturnType<typeof sessionState>|undefined;
+    let databaseAtEntry:ReturnType<typeof checkpointDatabaseDigest>|undefined;
+    let precedingCommittedRng:number=ordinary.FILL_PROTOCOL.seed;
+    const sample=ordinary.PaperFillSession.prototype.sample;
+    const loopPrototype=MakerLoop.prototype as unknown as {tick(...args:unknown[]):Promise<void>};
+    const tick=loopPrototype.tick;
+    ordinary.PaperFillSession.prototype.sample=function(this:InstanceType<typeof ordinary.PaperFillSession>,d){
+      referenceSession=this as unknown as OrdinarySessionView;
+      const at=referenceSession.clock();
+      if(!originalPrestateChecked&&d.missing.length===0&&at.mono-referenceSession.lastTick>=1000){
+        inspecting=true;
+        try{
+          const preTTL={at,session:sessionState(referenceSession),missing:d.missing,identity:d.identity,database:checkpointDatabaseDigest(off)};
+          expect(checkpointWire(preTTL)).toEqual(packet.snapshots.preTTL);originalPrestateChecked=true;
+        }finally{inspecting=false}
+      }
+      return Reflect.apply(sample,this,[d]);
+    };
+    loopPrototype.tick=function(this:MakerLoop,...args:unknown[]){
+      if(!originalTickChecked){
+        inspecting=true;
+        try{
+          if(!referenceSession)throw Error('ordinary tick outside observed PaperFillSession.sample');
+          atEntry={...referenceSession.clock()};
+          sessionAtEntry=structuredClone(sessionState(referenceSession));
+          databaseAtEntry=checkpointDatabaseDigest(off);
+          originalTickChecked=true;
+        }finally{inspecting=false}
+      }
+      return Reflect.apply(tick,this,args);
+    };
+    let control:Awaited<ReturnType<typeof ordinary.replayPaperEpoch>>;
+    try{
+      // Only the application belongs to this stream. The unchanged factory and diagnostic reads are outside it.
+      referenceEffects.length=0;recording=true;
+      control=await ordinary.replayPaperEpoch(f.epoch,off,f.config,log(logsOff),{afterCommit(state){
+        if(referenceCommitted)return;
+        if(!originalTickChecked){precedingCommittedRng=state.randomState;return;}
+        // Original sample() uses a forced transaction commit. Identify its first tick independently
+        // of the candidate's reported ordinal; the original committed ordinal is also its entry ordinal.
+        recording=false;
+        if(!referenceSession||!atEntry||!sessionAtEntry||!databaseAtEntry)throw Error('missing ordinary first tick state');
+        expect(referenceEffects).toEqual(packet.applicationNativeEffects);
+        expect(referenceEffects.length).toBeGreaterThan(0);
+        expect(packet.selectedSample!.ordinal).toBe(state.ordinal);
+        expect(packet.selectedSample!.at).toEqual(atEntry);
+        expect(state.at).toEqual(atEntry);
+        // The unchanged replay initializes its RNG from this seed, and the sole maker
+        // decision-group draw is inside tick. No earlier tick ran. Check prior committed RNG too.
+        expect(precedingCommittedRng).toBe(ordinary.FILL_PROTOCOL.seed);
+        const entry={at:atEntry,replayPosition:{ordinal:state.ordinal,randomState:ordinary.FILL_PROTOCOL.seed},
+          session:sessionAtEntry,database:databaseAtEntry};
+        expect(checkpointWire(entry)).toEqual(packet.snapshots.tickEntry);
+        const complete={database:checkpointDatabaseDigest(off),session:sessionState(referenceSession),
+          cursor:off.prepare('SELECT * FROM paper_replay_cursor WHERE epoch=?').get(f.epoch)};
+        expect(checkpointWire(complete)).toEqual(packet.snapshots.postEnclosingTransaction);
+        expect(packet.orderedTrace.at(-1)).toEqual({kind:'COMMITTED',data:checkpointWire(state)});
+        referenceCommitted=true;
+      }});
+    }finally{
+      recording=false;ordinary.PaperFillSession.prototype.sample=sample;loopPrototype.tick=tick;
+    }
+    expect(originalPrestateChecked).toBe(true);expect(originalTickChecked).toBe(true);
+    expect(referenceCommitted).toBe(true);expect(logsOn).toEqual(logsOff);
+    const {resources:_c,...semanticControl}=control,{resources:_o,...semanticObserved}=captured;
+    expect(semanticControl).toEqual(semanticObserved);
+    expect(checkpointDatabaseDigest(off)).toEqual(checkpointDatabaseDigest(on));
+  });
+  it('leaves an incomplete, non-reward packet when observation exhausts its budget',async()=>{
+    const {FirstDecisionRecorder}=await import('../../scripts/research/maker_decision_checkpoint');
+    const f=await archive();vi.useRealTimers();const recorder=new FirstDecisionRecorder(1),db=createPaperDatabase(path.join(f.root,'budget.sqlite'),recorder);dbs.push(db);
+    const outcome=await replayPaperEpoch(f.epoch,db,f.config,logger,undefined,recorder);
+    expect(outcome.fills.length).toBeGreaterThan(0);expect(recorder.result()).toMatchObject({status:'INCOMPLETE',verifiedComplete:false,newIndependentEconomicLabels:0});
+  });
 });

@@ -13,6 +13,7 @@ import { PaperMakerExecution, type PaperBook, type PaperClock, type PaperMakerPo
 import { createOperatingSourceState, type OperatingSourceMetadata } from './maker_operating_source_bridge';
 import { verifyOperatingCaptureArchive } from './maker_operating_capture';
 import { selectCurrentBtcMarket, syncEngineInputs } from './maker_paper_startup';
+import { checkpointDatabaseDigest, type FirstDecisionRecorder } from './maker_decision_checkpoint';
 import type { RawCapture } from './maker_startup_capture';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -112,7 +113,8 @@ export class PaperFillSession {
   private seen = new Set<string>();
   private lastTick = -Infinity;
   private terms = new Map<string, any>();
-  constructor(readonly db: Database.Database, config: any, readonly clock: () => PaperClock, logger: any) {
+  constructor(readonly db: Database.Database, config: any, readonly clock: () => PaperClock, logger: any, private readonly recorder?:FirstDecisionRecorder,
+    private readonly replayPosition?:()=>{ordinal:number;randomState:number}) {
     this.execution = new PaperMakerExecution(db, FILL_POLICY, clock);
     db.exec('CREATE TABLE IF NOT EXISTS paper_replay_print_refusals(epoch TEXT NOT NULL,source_id TEXT NOT NULL,payload_json TEXT NOT NULL,PRIMARY KEY(epoch,source_id))');
     for (const row of db.prepare("SELECT payload_json FROM clob_events WHERE conn_id='isolated-startup-capture'").all() as any[]) {
@@ -147,12 +149,17 @@ export class PaperFillSession {
         }
         // The strict execution sink remains the precommit authority, including held shares and remaining reservations.
         const terms = this.terms.get(token);
-        return { minimumShares: terms?.minimumShares ?? String(row?.minimum_order_size ?? 0),
+        const constraints = { minimumShares: terms?.minimumShares ?? String(row?.minimum_order_size ?? 0),
           minimumNotionalUSDC: terms?.minimumUnit === 'USDC_NOTIONAL' ? terms.minimum : '0', shareIncrement: terms?.lot ?? '0.000000001',
           budgetUSDC: 20, availableLiabilityUSDC: liability,
           feePerShareUSDC: '0', reservedShares: 0, inventoryLimitShares: 200 };
+        this.recorder?.event('QUOTE_CONSTRAINTS',()=>({token,market,context,constraints,funding:snap}));
+        return constraints;
       } });
     } catch (error) { try { this.gate.dispose(); } finally { this.execution.releaseSourceContext(); } throw error; }
+  }
+  checkpointSessionState() {
+    return {seen:[...this.seen],lastTick:this.lastTick,terms:[...this.terms],regime:this.gate.getLoadDiagnostics()};
   }
   cancelAll(at: PaperClock) {
     const rows = this.db.prepare("SELECT id FROM shadow_orders WHERE status IN ('OPEN','PARTIAL') ORDER BY id").all() as any[];
@@ -161,6 +168,8 @@ export class PaperFillSession {
   }
   async sample(d: ReturnType<ReturnType<typeof createOperatingSourceState>['snapshot']>) {
     const at = this.clock();
+    this.recorder?.sampleEntry(()=>({at,session:this.checkpointSessionState(),missing:d.missing,identity:d.identity,
+      database:d.missing.length===0&&at.mono-this.lastTick>=1000?checkpointDatabaseDigest(this.db):null}));
     for (const r of this.db.prepare("SELECT id FROM shadow_orders WHERE status IN ('OPEN','PARTIAL') AND expected_cancel_ts<=? ORDER BY id").all(at.utc) as any[]) this.execution.cancel(r.id, at);
     if (d.missing.length) { this.cancelAll(at); return; }
     if (at.mono - this.lastTick < 1000) return;
@@ -169,21 +178,25 @@ export class PaperFillSession {
     this.db.prepare('INSERT OR IGNORE INTO features SELECT * FROM latest_features WHERE token_id=?').run(d.identity.token);
     // Only the admitted current market supplies decisions; previous positions/marks remain in the ledger.
     this.db.prepare('UPDATE wallets SET market_filter_json=? WHERE id=1').run(JSON.stringify({ version: 1, includeMarketIds: [d.identity.market], requireActive: true }));
-    try { await (this.engine as any).tick(); }
+    this.recorder?.tick(()=>({at,replayPosition:this.replayPosition?.(),session:this.checkpointSessionState(),database:checkpointDatabaseDigest(this.db)}));
+    try { await (this.engine as any).tick(); this.recorder?.event('TICK_RETURN',()=>null); }
     catch (error) {
+      this.recorder?.event('TICK_THROW',()=>error);
       if (!String(error).includes('paper_execution:') && !String(error).includes('user-defined function')) throw error;
       this.db.prepare('INSERT INTO paper_replay_rejections(ts,reason) VALUES(?,?)').run(at.utc, String(error));
     }
     this.lastTick = at.mono;
     this.execution.reconcileOrders(at);
+    this.recorder?.event('SAMPLE_RECONCILED',()=>({at,session:this.checkpointSessionState()}));
   }
   close() { try { this.engine.stop(); } finally { try { this.gate.dispose(); } finally { this.execution.releaseSourceContext(); } } }
 }
 
-export function createPaperDatabase(file: string): Database.Database {
+export function createPaperDatabase(file: string, recorder?: FirstDecisionRecorder): Database.Database {
   const fresh = !existsSync(file);
-  const db = new Database(file);
+  const db = recorder ? new Database(file,{verbose:recorder.traceCallback}) : new Database(file);
   try {
+    if(recorder){recorder.bindPrivateDatabase(db);recorder.confirmNativeTrace(db);}
     db.pragma('foreign_keys = ON');
     if (fresh) {
       db.exec(readFileSync(path.join(ROOT, 'tests/maker/fixtures/startup-canonical-schema.sql'), 'utf8'));
@@ -242,7 +255,8 @@ class OriginalBook {
 }
 
 export async function replayPaperEpoch(epoch: string, db: Database.Database, config: any, logger: any,
-  devHooks?: { afterCommit?: (state: { ordinal: number; at: PaperClock; randomState: number }) => void }) {
+  devHooks?: { afterCommit?: (state: { ordinal: number; at: PaperClock; randomState: number }) => void }, recorder?:FirstDecisionRecorder) {
+  recorder?.beginApplicationWitness();
   need(realpathSync(epoch) === path.resolve(epoch), 'source_alias');
   const summary = JSON.parse(readFileSync(path.join(epoch, 'epoch-summary.json'), 'utf8'));
   need(summary.reconciled === true && summary.cleanupFailure === null, 'capture_not_closed');
@@ -286,9 +300,17 @@ export async function replayPaperEpoch(epoch: string, db: Database.Database, con
       await fn();
       if (force || (current + 1) % 500 === 0) {
         db.prepare('INSERT INTO paper_replay_cursor VALUES(?,?,?) ON CONFLICT(epoch) DO UPDATE SET ordinal=excluded.ordinal,random_state=excluded.random_state').run(epoch, current, randomState);
-        db.exec('COMMIT'); devHooks?.afterCommit?.({ ordinal: current, at: { ...at }, randomState });
+        db.exec('COMMIT');
+        recorder?.completed('COMMITTED',{ordinal:current,at:{...at},randomState},()=>({database:checkpointDatabaseDigest(db),session:session?.checkpointSessionState(),cursor:db.prepare('SELECT * FROM paper_replay_cursor WHERE epoch=?').get(epoch)}));
+        devHooks?.afterCommit?.({ ordinal: current, at: { ...at }, randomState });
       }
-    } catch (error) { if (db.inTransaction) db.exec('ROLLBACK'); throw error; }
+    } catch (error) {
+      if (db.inTransaction) {
+        db.exec('ROLLBACK');
+      }
+      recorder?.completed('ROLLED_BACK',{ordinal:current,at:{...at},randomState},()=>({error,database:checkpointDatabaseDigest(db),session:session?.checkpointSessionState(),cursor:db.prepare('SELECT * FROM paper_replay_cursor WHERE epoch=?').get(epoch)}));
+      throw error;
+    }
   };
   const sample = async (s: any) => {
     need(s.processedFrames === frameCount, 'sample_frontier'); at = s.at;
@@ -299,11 +321,14 @@ export async function replayPaperEpoch(epoch: string, db: Database.Database, con
     need(head && head.dataFrames >= s.processedFrames, 'sample_retention_prefix');
     const current = head.dataFrames === s.processedFrames && head.at.utc <= at.utc && head.at.mono <= at.mono;
     if (!current) withheldSamples++;
+    recorder?.sample({epoch,sample:s,index:sampleIndex-1,ordinal,appliedFrames:frameCount,proofHead:s.proofHeadSha256,at:{...at},randomState,current});
     await commit(async () => { observe(); if (current) await session!.sample(d); else session!.cancelAll(at); }, () => { if (book && !d.bookInvalidation) restorePaperBook(db, session!.execution, book); });
   };
   const started = performance.now(), cpu = process.cpuUsage();
   try {
-    session = new PaperFillSession(db, config, () => at, logger);
+    recorder?.started(db,()=>{need(!saved,'checkpoint_requires_fresh_epoch');need(config.regimeGating.reloadMs===60000,'checkpoint_timer_config');return {epoch,at:{...at},randomState,ordinal,sourceIdentity:identity,proofSeed:ledger.proofSeedSha256,config,node:process.versions.node,uv:process.versions.uv,arch:process.arch,platform:process.platform,cwd:process.cwd(),regimeDebugSample:process.env.REGIME_GATE_DEBUG_SAMPLE??null,database:checkpointDatabaseDigest(db)};});
+    session = new PaperFillSession(db, config, () => at, logger,recorder,recorder?()=>({ordinal:ordinal-1,randomState}):undefined);
+    recorder?.initialized(()=>session!.checkpointSessionState());
     for await (const index of lines(path.join(epoch, 'source/segments.ndjson'))) {
       for await (const frame of lines(path.join(epoch, 'source', index.file))) {
         need(frame.number === ++wireFrameCount && frame.complete === true, 'frame_sequence');
@@ -387,7 +412,7 @@ export async function replayPaperEpoch(epoch: string, db: Database.Database, con
       explanation: 'Committed funds, holdings and reservations retained. In-transaction failures roll back; committed boundaries remain. No terminal-zero assertion.',
     } });
     throw error;
-  } finally { try { session?.close(); } finally { Date.now = originalNow; Math.random = originalRandom; } }
+  } finally { try { session?.close(); } finally { Date.now = originalNow; Math.random = originalRandom; recorder?.close(); } }
 }
 
 type Admission = { schema: 'CONSERVING_PAPER_REPLAY_ADMISSION_V1'; codeSha256: Record<string, string>; protocolSha256: string;

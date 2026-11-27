@@ -269,3 +269,18 @@ clock use. Tests in maker_fill_memory exercise chunk/empty/mutation hashes,
 retained projection, WeakRef/GC liveness, paired preserved-V4 full outputs and
 follower restart integrity. The isolated hash RSS probe is not a full-service
 memory guarantee; monitor actual native tree RSS and preserve guard failures.
+
+
+## ENG035 original-decision observer
+
+Entry points: `scripts/research/maker_decision_checkpoint.ts`, optional recorder
+hooks in `maker_fill_paper.ts`, and `tests/maker/maker_decision_checkpoint.test.ts`.
+The ENG035 archive cases compare with the literal ordinary 5394d97 implementation
+in `.eng035-unmodified-ordinary.ts`: first actual tick, full native/write order,
+state, original clock/cursor/RNG, and full authored epoch output. The observer
+uses typed streamed SQLite digests and real timer-resource evidence, refuses
+unsupported native verbose inputs, and always leaves independent certification
+outstanding. Preserve the separate source/future-input and bank review before
+prospective capture; do not treat an authored test or conditional source relation
+as a reusable representation, economic label or profitability result. See the
+ENG035 section in `agent.md` for ownership and evidence constraints.
