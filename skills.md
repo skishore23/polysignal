@@ -284,3 +284,16 @@ outstanding. Preserve the separate source/future-input and bank review before
 prospective capture; do not treat an authored test or conditional source relation
 as a reusable representation, economic label or profitability result. See the
 ENG035 section in `agent.md` for ownership and evidence constraints.
+
+
+## Causal-prefix custody for prospective measurements
+
+Entry: `scripts/research/maker_decision_prefix_v4.ts`; authored checks:
+`tests/maker/maker_decision_prefix_v4.test.ts`. Use exact immutable private pins
+and independently reviewed producer/selection/dependency witnesses. Four HTTP
+bodies and exact causal frame/sample bytes are consumer inputs; full archive
+counts, successor witnesses, later records and outcomes remain private. Data FIFO
+and retained-wire ordering are different obligations; ping/pong also advance
+the proof chain. Preserve older failed source reviews, genuine withheld samples
+and clock ties. Do not infer capture permission, state completeness, learned
+search, economic labels or full-cost savings from these file-export checks.

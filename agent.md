@@ -319,3 +319,19 @@ clock, bank, resource and independent-verifier admission. Keep its raw private
 evidence; authored parity tests are engineering evidence, not a live decision,
 representation advantage, learned policy or economic reward. No CLI dispatch,
 existing follower/source upgrade or live permission is added by these hooks.
+
+
+### ENG035 causal-prefix input export
+
+`scripts/research/maker_decision_prefix_v4.ts` exports an input-only byte prefix
+from independently pinned private archive, identity, selection and dependency
+witnesses. It checks original endpoint/token binding, data callback FIFO, native
+sample cadence, and the immediate wire successor of each proof head (including
+control traffic) or matching archive EOF. Private successor/closure evidence stays
+outside the consumer input; a truncated prefix is never a closed replay archive.
+Regressions: `tests/maker/maker_decision_prefix_v4.test.ts`. These authored checks
+validate export mechanics. Whole-source authenticity, complete decision-time
+state, future selection and actual native capture remain separate admissions.
+The helper has no market connection, SQLite access, researcher dispatch or
+economic reward authority. Keep complete private evidence and costs; a passing
+exporter is not a representation advantage or a complete original decision.
